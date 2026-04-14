@@ -432,6 +432,10 @@ body {
  min-height: 42px;
 }
 
+.studio-status-shell:has(.studio-status-progress-copy) .studio-status-top {
+ padding-top: 10px;
+}
+
 .studio-status-meta {
  min-width: 0;
  flex: 1;
@@ -580,6 +584,9 @@ body {
  min-height: 18px;
 }
 
+.studio-status-shell.is-running .studio-status-progress-copy {
+ padding: 10px 0 8px;
+}
 .studio-error {
  margin-top: 10px;
  border: 1px solid var(--line);
@@ -759,9 +766,6 @@ body {
  width: 28px;
  height: 28px;
  min-width: 28px;
- border: 1px solid rgba(91, 101, 118, 0.18);
- border-radius: 9999px;
- background: rgba(255, 255, 255, 0.76);
  display: inline-flex;
  align-items: center;
  justify-content: center;
@@ -778,9 +782,7 @@ body {
 }
 
 .studio-icon-btn:hover:not(:disabled) {
- background: rgba(255, 255, 255, 0.96);
- border-color: rgba(91, 101, 118, 0.28);
- color: var(--text);
+ color: #d35d62;
 }
 
 .studio-icon-btn:active:not(:disabled) {
