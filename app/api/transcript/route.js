@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { fetchTranscript } from "youtube-transcript";
+import { fetchTranscript, listLanguages } from "youtube-transcript-plus";
 
 function normalizeYoutubeUrl(input) {
  const value = String(input || "").trim();
@@ -36,6 +36,130 @@ function normalizeYoutubeUrl(input) {
  }
 
  return `https://www.youtube.com/watch?v=${videoId}`;
+}
+
+function extractVideoId(input) {
+ const value = String(input || "").trim();
+
+ if (!value) {
+  throw new Error("EMPTY_URL");
+ }
+
+ if (/^[a-zA-Z0-9_-]{11}$/.test(value)) {
+  return value;
+ }
+
+ const url = new URL(normalizeYoutubeUrl(value));
+ const videoId = url.searchParams.get("v");
+
+ if (!videoId) {
+  throw new Error("INVALID_YOUTUBE_URL");
+ }
+
+ return videoId;
+}
+
+function createRequestInit(lang) {
+ const userAgent =
+  process.env.YOUTUBE_TRANSCRIPT_USER_AGENT ||
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+
+ return {
+  userAgent,
+  retries: 3,
+  retryDelay: 800,
+  lang,
+  videoFetch: async ({ url, userAgent: runtimeUserAgent }) => {
+   return fetch(url, {
+    headers: {
+     "User-Agent": runtimeUserAgent || userAgent,
+     "Accept-Language": lang ? `${lang},en;q=0.9` : "en-US,en;q=0.9,ko;q=0.8",
+     Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+     "Cache-Control": "no-cache",
+     Pragma: "no-cache",
+    },
+    next: { revalidate: 0 },
+   });
+  },
+  playerFetch: async ({ url, method, body, headers, userAgent: runtimeUserAgent }) => {
+   return fetch(url, {
+    method,
+    headers: {
+     ...headers,
+     "User-Agent": runtimeUserAgent || userAgent,
+     "Accept-Language": lang ? `${lang},en;q=0.9` : "en-US,en;q=0.9,ko;q=0.8",
+     Accept: "application/json,text/plain,*/*",
+     "Cache-Control": "no-cache",
+     Pragma: "no-cache",
+    },
+    body,
+    next: { revalidate: 0 },
+   });
+  },
+  transcriptFetch: async ({ url, userAgent: runtimeUserAgent }) => {
+   return fetch(url, {
+    headers: {
+     "User-Agent": runtimeUserAgent || userAgent,
+     "Accept-Language": lang ? `${lang},en;q=0.9` : "en-US,en;q=0.9,ko;q=0.8",
+     Accept: "application/json,text/xml,application/xml;q=0.9,*/*;q=0.8",
+     "Cache-Control": "no-cache",
+     Pragma: "no-cache",
+    },
+    next: { revalidate: 0 },
+   });
+  },
+ };
+}
+
+async function fetchTranscriptWithFallback(videoIdOrUrl) {
+ const candidates = ["ko", "en", "ja", "en-US", undefined];
+ const errors = [];
+
+ for (const lang of candidates) {
+  try {
+   const result = await fetchTranscript(videoIdOrUrl, createRequestInit(lang));
+   const segments = Array.isArray(result) ? result : result?.segments;
+
+   if (Array.isArray(segments) && segments.length > 0) {
+    return { transcript: segments, lang: lang || "auto" };
+   }
+  } catch (error) {
+   errors.push({
+    lang: lang || "auto",
+    message: error instanceof Error ? error.message : "UNKNOWN_ERROR",
+   });
+  }
+ }
+
+ let availableLanguages = [];
+
+ try {
+  availableLanguages = await listLanguages(videoIdOrUrl);
+ } catch {}
+
+ const availableCodes = Array.isArray(availableLanguages) ? availableLanguages.map((item) => item.languageCode).filter(Boolean) : [];
+
+ if (availableCodes.length > 0) {
+  for (const lang of availableCodes.slice(0, 5)) {
+   try {
+    const result = await fetchTranscript(videoIdOrUrl, createRequestInit(lang));
+    const segments = Array.isArray(result) ? result : result?.segments;
+
+    if (Array.isArray(segments) && segments.length > 0) {
+     return { transcript: segments, lang };
+    }
+   } catch (error) {
+    errors.push({
+     lang,
+     message: error instanceof Error ? error.message : "UNKNOWN_ERROR",
+    });
+   }
+  }
+ }
+
+ const finalError = new Error("TRANSCRIPT_FETCH_FAILED");
+ finalError.cause = { errors, availableCodes };
+ throw finalError;
 }
 
 function formatTimestamp(offset) {
@@ -124,7 +248,8 @@ export async function POST(req) {
    return NextResponse.json({ error: "요청을 처리할 수 없습니다." }, { status: 400 });
   }
 
-  const transcript = await fetchTranscript(normalizedUrl);
+  const videoId = extractVideoId(normalizedUrl);
+  const { transcript, lang } = await fetchTranscriptWithFallback(videoId);
 
   if (!Array.isArray(transcript) || transcript.length === 0) {
    return NextResponse.json({ error: "자막 데이터가 비어 있습니다." }, { status: 404 });
@@ -143,16 +268,19 @@ export async function POST(req) {
     transcriptText,
     transcriptChunks,
     chunkCount: transcriptChunks.length,
+    detectedLang: lang,
    },
    { status: 200 },
   );
  } catch (error) {
   const details = error instanceof Error ? error.message : "UNKNOWN_TRANSCRIPT_ERROR";
+  const cause = error instanceof Error && error.cause && typeof error.cause === "object" ? error.cause : null;
 
   return NextResponse.json(
    {
-    error: "자막을 가져오지 못했습니다. 자막이 비활성화된 영상이거나 요청이 차단되었을 수 있습니다.",
+    error: "자막을 가져오지 못했습니다. 자막이 비활성화된 영상이거나 Vercel 같은 클라우드 환경에서 요청이 차단되었을 수 있습니다.",
     details,
+    diagnostics: cause,
    },
    { status: 500 },
   );

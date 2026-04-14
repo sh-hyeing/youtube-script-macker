@@ -1169,10 +1169,6 @@ textarea.studio-input {
   font-size: 12.5px;
  }
 
- .studio-status-shell {
-  min-height: 92px;
- }
-
  .studio-progress-spinner-wrap {
   width: 40px;
   height: 40px;
