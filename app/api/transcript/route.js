@@ -49,6 +49,41 @@ function getRailwayBaseUrl() {
  return value.replace(/\/+$/, "");
 }
 
+function chunkTextByLine(text, maxLength = 2800) {
+ if (!text.trim()) return [];
+
+ const lines = text.split("\n");
+ const chunks = [];
+ let current = "";
+
+ for (const line of lines) {
+  const candidate = current ? `${current}\n${line}` : line;
+
+  if (candidate.length <= maxLength) {
+   current = candidate;
+   continue;
+  }
+
+  if (current) {
+   chunks.push(current);
+   current = line;
+   continue;
+  }
+
+  let start = 0;
+  while (start < line.length) {
+   chunks.push(line.slice(start, start + maxLength));
+   start += maxLength;
+  }
+ }
+
+ if (current) {
+  chunks.push(current);
+ }
+
+ return chunks;
+}
+
 export async function POST(req) {
  try {
   let body;
@@ -196,39 +231,4 @@ export async function POST(req) {
    { status: 500 },
   );
  }
-}
-
-function chunkTextByLine(text, maxLength = 2800) {
- if (!text.trim()) return [];
-
- const lines = text.split("\n");
- const chunks = [];
- let current = "";
-
- for (const line of lines) {
-  const candidate = current ? `${current}\n${line}` : line;
-
-  if (candidate.length <= maxLength) {
-   current = candidate;
-   continue;
-  }
-
-  if (current) {
-   chunks.push(current);
-   current = line;
-   continue;
-  }
-
-  let start = 0;
-  while (start < line.length) {
-   chunks.push(line.slice(start, start + maxLength));
-   start += maxLength;
-  }
- }
-
- if (current) {
-  chunks.push(current);
- }
-
- return chunks;
 }
