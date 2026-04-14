@@ -142,15 +142,22 @@ export default function Page() {
 
  const handleSaveKeys = () => {
   const parsedKeys = parseApiKeys(apiKeyInput);
-  setApiKeys(parsedKeys);
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(parsedKeys));
-
+  const normalizedInput = parsedKeys.join("\n");
   const nextIndex = parsedKeys.length === 0 ? 0 : Math.min(activeKeyIndex, parsedKeys.length - 1);
-  setActiveKeyIndex(nextIndex);
-  localStorage.setItem(STORAGE_ACTIVE_KEY, String(nextIndex));
 
-  setErrorMessage("");
-  setStatusText(parsedKeys.length > 0 ? "API 키 저장됨" : "대기 중");
+  try {
+   localStorage.setItem(STORAGE_KEY, JSON.stringify(parsedKeys));
+   localStorage.setItem(STORAGE_ACTIVE_KEY, String(nextIndex));
+
+   setApiKeys(parsedKeys);
+   setApiKeyInput(normalizedInput);
+   setActiveKeyIndex(nextIndex);
+   setErrorMessage("");
+   setStatusText(parsedKeys.length > 0 ? "API 키 저장됨" : "대기 중");
+  } catch {
+   setErrorMessage("브라우저 저장소에 저장하지 못했습니다.");
+   setStatusText("오류");
+  }
  };
 
  const handleClearKeys = () => {
@@ -455,7 +462,7 @@ export default function Page() {
         <span />
         <span />
        </div>
-       <div className="studio-title">Script Studio</div>
+       <div className="studio-title">Script Macker</div>
       </div>
       <div className="studio-meta">YouTube → Transcript → Study Script</div>
      </header>
@@ -514,13 +521,15 @@ export default function Page() {
          <div id="studio-card-api" className="studio-card-body">
           <label className="studio-field">
            <span className="studio-label">Gemini API Keys</span>
-           <textarea
-            value={apiKeyInput}
-            onChange={(e) => setApiKeyInput(e.target.value)}
-            className="studio-input"
-            placeholder={"한 줄에 하나씩 입력하세요\nAIza...\nAIza..."}
-            rows={7}
-           />
+           <div className="studio-input-shell studio-input-shell-textarea">
+            <textarea
+             value={apiKeyInput}
+             onChange={(e) => setApiKeyInput(e.target.value)}
+             className="studio-input studio-input-textarea"
+             placeholder={"한 줄에 하나씩 입력하세요\nAIza...\nAIza..."}
+             rows={7}
+            />
+           </div>
           </label>
 
           <div className="studio-action-stack">
@@ -684,7 +693,7 @@ export default function Page() {
         <article className="studio-panel">
          <div className="studio-panel-head">
           <div>
-           <div className="studio-panel-title">Study Script</div>
+           <div className="studio-panel-title">New Script</div>
            <div className="studio-panel-subtitle">
             {viewMode === "bilingual" ? "영어 한 줄 / 한국어 한 줄" : viewMode === "english" ? "영어만 표시" : "한국어만 표시"}
            </div>
@@ -732,7 +741,7 @@ export default function Page() {
         <article className="studio-panel">
          <div className="studio-panel-head">
           <div>
-           <div className="studio-panel-title">Original Transcript</div>
+           <div className="studio-panel-title">Original Script</div>
            <div className="studio-panel-subtitle">원문</div>
           </div>
           <span className="studio-chip">{chunkCount > 0 ? `${chunkCount} CHUNKS` : "NO DATA"}</span>
