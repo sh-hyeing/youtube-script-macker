@@ -415,10 +415,12 @@ const buildTranscriptPrompt = (titleHint: string) => {
  const normalizedTitleHint = titleHint.trim();
 
  return [
-  "다음 오디오의 들리는 말만 텍스트로 옮기세요.",
+  "다음 오디오의 들리는 말만 보수적으로 전사하세요.",
   "설명, 요약, 해설, 제목, 머리말 없이 전사 텍스트만 출력하세요.",
+  "들리지 않거나 확실하지 않은 부분은 추측해서 채우지 말고 생략하세요.",
+  "외부 지식, 기억, 알려진 가사를 이용해 보완하지 마세요.",
+  "같은 구절의 반복은 실제로 다시 또렷하게 들릴 때만 적고, 반복을 추정해서 늘리지 마세요.",
   "문장 순서를 유지하세요.",
-  "노래라면 후렴과 반복 가사를 합치지 말고 들리는 순서대로 유지하세요.",
   normalizedTitleHint ? `제목 힌트: ${normalizedTitleHint}` : "",
  ]
   .filter(Boolean)

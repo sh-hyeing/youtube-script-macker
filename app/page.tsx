@@ -11,13 +11,9 @@ type TranscriptResponse = {
  transcriptText: string;
  transcriptChunks: string[];
  chunkCount: number;
- detectedLang?: string;
- fetchedVia?: string;
- rawVtt?: string;
- fileName?: string;
  title?: string;
+ fileName?: string;
  transcriptSource?: string;
- subtitleAvailability?: string;
  needsClientStt?: boolean;
  audioUrl?: string;
  audioMimeType?: string;
@@ -26,8 +22,54 @@ type TranscriptResponse = {
 
 type ViewMode = "bilingual" | "english" | "korean";
 
-const PRIMARY_MODEL = "gemini-2.5-flash";
-const FALLBACK_MODEL = "gemini-2.5-flash-lite";
+const isSongLikeContent = (value: string) => {
+ const text = value.toLowerCase();
+
+ const strongSongKeywords = [
+  "lyrics",
+  "lyric video",
+  "official audio",
+  "official mv",
+  "music video",
+  "visualizer",
+  "live clip",
+  "ost",
+  "soundtrack",
+  "karaoke",
+  "cover",
+  "remix",
+ ];
+
+ return strongSongKeywords.some((keyword) => text.includes(keyword));
+};
+
+const getRunModelConfig = ({ title, fileName, chunkCount }: { title?: string; fileName?: string; chunkCount: number }) => {
+ const sourceText = `${title || ""} ${fileName || ""}`.trim();
+ const isSong = isSongLikeContent(sourceText);
+
+ if (isSong) {
+  return {
+   primaryModel: FLASH_MODEL,
+   fallbackModel: FLASH_LITE_MODEL,
+  };
+ }
+
+ if (chunkCount >= LONG_VIDEO_CHUNK_THRESHOLD) {
+  return {
+   primaryModel: FLASH_LITE_MODEL,
+   fallbackModel: FLASH_MODEL,
+  };
+ }
+
+ return {
+  primaryModel: FLASH_MODEL,
+  fallbackModel: FLASH_LITE_MODEL,
+ };
+};
+
+const FLASH_MODEL = "gemini-2.5-flash";
+const FLASH_LITE_MODEL = "gemini-2.5-flash-lite";
+const LONG_VIDEO_CHUNK_THRESHOLD = 25;
 const STORAGE_KEY = "gemini_api_keys_v1";
 const STORAGE_ACTIVE_KEY = "gemini_active_key_index_v1";
 const STT_CACHE_PREFIX = "gemini_stt_cache_v1:";
@@ -122,6 +164,10 @@ export default function Page() {
 
  const cooldownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
  const resumeRequestedRef = useRef(false);
+ const selectedModelsRef = useRef({
+  primaryModel: FLASH_MODEL,
+  fallbackModel: FLASH_LITE_MODEL,
+ });
 
  useEffect(() => {
   const savedKeys = localStorage.getItem(STORAGE_KEY);
@@ -397,6 +443,14 @@ export default function Page() {
    setStatusText("자막 준비 완료");
    setLoadingTranscript(false);
 
+   const selectedModels = getRunModelConfig({
+    title: transcriptData.title,
+    fileName: transcriptData.fileName,
+    chunkCount: finalTranscriptChunks.length,
+   });
+
+   selectedModelsRef.current = selectedModels;
+
    setLoadingGemini(true);
 
    const mergedPairs = await processChunks({
@@ -406,8 +460,8 @@ export default function Page() {
     signal: controller.signal,
     apiKeys,
     activeKeyIndex,
-    primaryModel: PRIMARY_MODEL,
-    fallbackModel: FALLBACK_MODEL,
+    primaryModel: selectedModels.primaryModel,
+    fallbackModel: selectedModels.fallbackModel,
     onStatusChange: setStatusText,
     onActiveKeyChange: setActiveKeyIndex,
     onPersistActiveKey: (index) => {
@@ -480,8 +534,8 @@ export default function Page() {
     signal: controller.signal,
     apiKeys,
     activeKeyIndex,
-    primaryModel: PRIMARY_MODEL,
-    fallbackModel: FALLBACK_MODEL,
+    primaryModel: selectedModelsRef.current.primaryModel,
+    fallbackModel: selectedModelsRef.current.fallbackModel,
     onStatusChange: setStatusText,
     onActiveKeyChange: setActiveKeyIndex,
     onPersistActiveKey: (index) => {
