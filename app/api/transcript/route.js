@@ -95,7 +95,6 @@ export async function POST(req) {
   }
 
   const videoUrl = body && typeof body === "object" && typeof body.videoUrl === "string" ? body.videoUrl : "";
-
   const lang = body && typeof body === "object" && typeof body.lang === "string" ? body.lang.trim() : "";
 
   let normalizedUrl;
@@ -154,7 +153,6 @@ export async function POST(req) {
 
   if (!upstreamResponse.ok) {
    const upstreamError = data && typeof data === "object" && typeof data.error === "string" ? data.error : "UPSTREAM_TRANSCRIPT_ERROR";
-
    const upstreamDetails = data && typeof data === "object" && "details" in data ? data.details : rawText;
 
    if (upstreamResponse.status === 404) {
@@ -190,12 +188,38 @@ export async function POST(req) {
    );
   }
 
+  const needsClientStt = Boolean(data && typeof data === "object" && "needsClientStt" in data && data.needsClientStt === true);
+
   const transcriptText =
    data && typeof data === "object" && typeof data.transcript === "string"
     ? data.transcript
     : data && typeof data === "object" && typeof data.text === "string"
       ? data.text
       : "";
+
+  if (needsClientStt) {
+   return NextResponse.json(
+    {
+     normalizedUrl,
+     transcriptText: "",
+     transcriptChunks: [],
+     chunkCount: 0,
+     detectedLang: data && typeof data === "object" && typeof data.lang === "string" ? data.lang : lang || "auto",
+     fetchedVia: data && typeof data === "object" && typeof data.source === "string" ? data.source : "railway-ytdlp",
+     rawVtt: "",
+     fileName: data && typeof data === "object" && typeof data.fileName === "string" ? data.fileName : "",
+     title: data && typeof data === "object" && typeof data.title === "string" ? data.title : "",
+     transcriptSource: data && typeof data === "object" && typeof data.transcriptSource === "string" ? data.transcriptSource : "client_gemini_stt",
+     subtitleAvailability:
+      data && typeof data === "object" && typeof data.subtitleAvailability === "string" ? data.subtitleAvailability : "auto_only",
+     needsClientStt: true,
+     audioUrl: data && typeof data === "object" && typeof data.audioUrl === "string" ? data.audioUrl : "",
+     audioMimeType: data && typeof data === "object" && typeof data.audioMimeType === "string" ? data.audioMimeType : "",
+     expiresAt: data && typeof data === "object" && typeof data.expiresAt === "number" ? data.expiresAt : 0,
+    },
+    { status: 200 },
+   );
+  }
 
   if (!transcriptText.trim()) {
    return NextResponse.json({ error: "가공 가능한 자막 텍스트가 없습니다." }, { status: 404 });
@@ -214,9 +238,16 @@ export async function POST(req) {
     transcriptChunks,
     chunkCount: transcriptChunks.length,
     detectedLang: data && typeof data === "object" && typeof data.lang === "string" ? data.lang : lang || "auto",
-    fetchedVia: "railway-ytdlp",
+    fetchedVia: data && typeof data === "object" && typeof data.source === "string" ? data.source : "railway-ytdlp",
     rawVtt: data && typeof data === "object" && typeof data.rawVtt === "string" ? data.rawVtt : "",
     fileName: data && typeof data === "object" && typeof data.fileName === "string" ? data.fileName : "",
+    title: data && typeof data === "object" && typeof data.title === "string" ? data.title : "",
+    transcriptSource: data && typeof data === "object" && typeof data.transcriptSource === "string" ? data.transcriptSource : "official_subtitle",
+    subtitleAvailability: data && typeof data === "object" && typeof data.subtitleAvailability === "string" ? data.subtitleAvailability : "official",
+    needsClientStt: false,
+    audioUrl: "",
+    audioMimeType: "",
+    expiresAt: 0,
    },
    { status: 200 },
   );

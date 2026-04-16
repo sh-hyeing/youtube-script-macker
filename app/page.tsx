@@ -4,12 +4,24 @@ import { jsPDF } from "jspdf";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { dedupePairs, processChunks, type ScriptPair } from "@/lib/gemini";
 import { downloadStudyScriptPdf } from "@/lib/pdf";
+import { transcribeAudioWithGemini } from "@/lib/clientGeminiStt";
 
 type TranscriptResponse = {
  normalizedUrl: string;
  transcriptText: string;
  transcriptChunks: string[];
  chunkCount: number;
+ detectedLang?: string;
+ fetchedVia?: string;
+ rawVtt?: string;
+ fileName?: string;
+ title?: string;
+ transcriptSource?: string;
+ subtitleAvailability?: string;
+ needsClientStt?: boolean;
+ audioUrl?: string;
+ audioMimeType?: string;
+ expiresAt?: number;
 };
 
 type ViewMode = "bilingual" | "english" | "korean";
@@ -18,6 +30,68 @@ const PRIMARY_MODEL = "gemini-2.5-flash";
 const FALLBACK_MODEL = "gemini-2.5-flash-lite";
 const STORAGE_KEY = "gemini_api_keys_v1";
 const STORAGE_ACTIVE_KEY = "gemini_active_key_index_v1";
+const STT_CACHE_PREFIX = "gemini_stt_cache_v1:";
+
+const chunkTextByLine = (text: string, maxLength = 2800) => {
+ if (!text.trim()) return [];
+
+ const lines = text.split("\n");
+ const chunks: string[] = [];
+ let current = "";
+
+ for (const line of lines) {
+  const candidate = current ? `${current}\n${line}` : line;
+
+  if (candidate.length <= maxLength) {
+   current = candidate;
+   continue;
+  }
+
+  if (current) {
+   chunks.push(current);
+   current = line;
+   continue;
+  }
+
+  let start = 0;
+  while (start < line.length) {
+   chunks.push(line.slice(start, start + maxLength));
+   start += maxLength;
+  }
+ }
+
+ if (current) {
+  chunks.push(current);
+ }
+
+ return chunks;
+};
+
+const getSttCacheKey = (videoUrl: string) => `${STT_CACHE_PREFIX}${videoUrl.trim()}`;
+
+const readCachedSttText = (videoUrl: string) => {
+ try {
+  const raw = sessionStorage.getItem(getSttCacheKey(videoUrl));
+  if (!raw) return "";
+
+  const parsed = JSON.parse(raw);
+  return parsed && typeof parsed.text === "string" ? parsed.text : "";
+ } catch {
+  return "";
+ }
+};
+
+const writeCachedSttText = (videoUrl: string, text: string) => {
+ try {
+  sessionStorage.setItem(
+   getSttCacheKey(videoUrl),
+   JSON.stringify({
+    text,
+    savedAt: Date.now(),
+   }),
+  );
+ } catch {}
+};
 
 export default function Page() {
  const [videoUrl, setVideoUrl] = useState("");
@@ -277,9 +351,48 @@ export default function Page() {
     throw new DOMException("Aborted", "AbortError");
    }
 
-   setOriginalScript(transcriptData.transcriptText || "");
-   setChunkCount(transcriptData.chunkCount || 0);
-   setSavedTranscriptChunks(transcriptData.transcriptChunks || []);
+   let finalTranscriptText = transcriptData.transcriptText || "";
+   let finalTranscriptChunks = transcriptData.transcriptChunks || [];
+
+   if (transcriptData.needsClientStt) {
+    const sttApiKey = apiKeys[activeKeyIndex] || apiKeys[0] || "";
+    const cachedText = readCachedSttText(videoUrl);
+
+    if (cachedText) {
+     finalTranscriptText = cachedText;
+     finalTranscriptChunks = chunkTextByLine(cachedText, 2800);
+    } else {
+     if (!transcriptData.audioUrl) {
+      throw new Error("음성 인식용 오디오 주소를 받지 못했습니다.");
+     }
+
+     setStatusText("음성 인식 중");
+
+     const sttText = await transcribeAudioWithGemini({
+      audioUrl: transcriptData.audioUrl,
+      apiKey: sttApiKey,
+      titleHint: transcriptData.title || "",
+      signal: controller.signal,
+      onStatusChange: setStatusText,
+     });
+
+     finalTranscriptText = sttText;
+     finalTranscriptChunks = chunkTextByLine(sttText, 2800);
+     writeCachedSttText(videoUrl, sttText);
+    }
+   }
+
+   if (!finalTranscriptText.trim()) {
+    throw new Error("가공 가능한 자막 텍스트가 없습니다.");
+   }
+
+   if (finalTranscriptChunks.length === 0) {
+    throw new Error("가공 가능한 자막 청크를 만들지 못했습니다.");
+   }
+
+   setOriginalScript(finalTranscriptText);
+   setChunkCount(finalTranscriptChunks.length);
+   setSavedTranscriptChunks(finalTranscriptChunks);
    setResumeIndex(0);
    setStatusText("자막 준비 완료");
    setLoadingTranscript(false);
@@ -287,7 +400,7 @@ export default function Page() {
    setLoadingGemini(true);
 
    const mergedPairs = await processChunks({
-    transcriptChunks: transcriptData.transcriptChunks,
+    transcriptChunks: finalTranscriptChunks,
     startIndex: 0,
     initialPairs: [],
     signal: controller.signal,
@@ -305,7 +418,7 @@ export default function Page() {
    });
 
    setPairs(dedupePairs(mergedPairs));
-   setResumeIndex(transcriptData.transcriptChunks.length);
+   setResumeIndex(finalTranscriptChunks.length);
    setIsPaused(false);
    setStatusText("완료");
   } catch (error) {

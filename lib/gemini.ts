@@ -1,6 +1,7 @@
 export type ScriptPair = {
  en: string;
  ko: string;
+ keepDuplicate?: boolean;
 };
 
 export type GeminiError = Error & {
@@ -101,44 +102,92 @@ export const requestGeminiWithKey = async ({ model, prompt, apiKey, signal }: Re
 };
 
 export const safeParsePairs = (raw: string): ScriptPair[] => {
- try {
-  const parsed = JSON.parse(raw);
+ const normalize = (value: unknown): ScriptPair[] => {
+  if (!Array.isArray(value)) return [];
 
-  if (!Array.isArray(parsed)) return [];
+  return value
+   .map((item) => {
+    const en = typeof item?.en === "string" ? item.en.trim() : "";
+    const ko = typeof item?.ko === "string" ? item.ko.trim() : "";
 
-  return parsed
-   .map((item) => ({
-    en: typeof item?.en === "string" ? item.en.trim() : "",
-    ko: typeof item?.ko === "string" ? item.ko.trim() : "",
-   }))
-   .filter((item) => item.en || item.ko);
- } catch {
-  return [];
+    if (!en && !ko) return null;
+
+    if (item && typeof item === "object" && (item as { keepDuplicate?: unknown }).keepDuplicate === true) {
+     return { en, ko, keepDuplicate: true } as ScriptPair;
+    }
+
+    return { en, ko } as ScriptPair;
+   })
+   .filter(Boolean) as ScriptPair[];
+ };
+
+ const cleaned = raw
+  .trim()
+  .replace(/^```json\s*/i, "")
+  .replace(/^```\s*/i, "")
+  .replace(/\s*```$/i, "");
+
+ const candidates = [cleaned];
+
+ const firstBracket = cleaned.indexOf("[");
+ const lastBracket = cleaned.lastIndexOf("]");
+
+ if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
+  candidates.push(cleaned.slice(firstBracket, lastBracket + 1));
  }
+
+ for (const candidate of candidates) {
+  try {
+   const parsed = JSON.parse(candidate);
+
+   const direct = normalize(parsed);
+   if (direct.length > 0) return direct;
+
+   if (parsed && typeof parsed === "object") {
+    const objectParsed = parsed as {
+     pairs?: unknown;
+     items?: unknown;
+     data?: unknown;
+     result?: unknown;
+    };
+
+    const nested = normalize(objectParsed.pairs) || normalize(objectParsed.items) || normalize(objectParsed.data) || normalize(objectParsed.result);
+
+    if (nested.length > 0) return nested;
+   }
+  } catch {}
+ }
+
+ return [];
 };
 
 export const requestStructuredPairs = async ({ model, chunk, index, total, apiKey, signal }: StructuredPairsParams) => {
  const prompt = [
   "다음은 유튜브 자막 원문입니다.",
   "한국어와 영어가 섞여 있고, 반복, 끊긴 문장, 자막 오류가 있습니다.",
-  "학습용 스크립트로 재구성해 주세요.",
+  "내부적으로만 일반 학습 영상인지 노래/가사인지 판단하고, 판단 결과를 설명하지 마세요.",
   "",
   "반드시 아래 규칙을 지키세요.",
-  "1. 영어 학습 문장만 남기세요.",
-  "2. 영상 소개, 광고, 동기부여 멘트, 구독 유도, 교재 홍보, 강의 홍보, 설명용 한국어 서론은 전부 제거하세요.",
-  "3. 영어 문장을 기준으로 정리하세요.",
-  "4. 같은 영어 문장이 반복되면 한 번만 남기세요.",
-  "5. 잘린 영어 문장은 문맥상 자연스럽게 복원하세요.",
-  "6. 각 영어 문장에 대응하는 자연스러운 한국어 번역을 붙이세요.",
-  "7. 설명, 해설, 제목 없이 JSON 배열만 반환하세요.",
-  '8. 각 항목은 {"en":"영어 문장","ko":"한국어 번역"} 형식이어야 합니다.',
-  "9. 영어가 없는 한국어 안내 멘트는 제외하세요.",
-  "10. 사진 묘사, 스피킹 표현, 실제 연습 문장처럼 영어 학습에 직접 쓰이는 문장만 남기세요.",
+  "1. 설명, 해설, 제목, 서론, 판단 근거를 쓰지 말고 JSON 배열만 반환하세요.",
+  '2. 모든 항목은 반드시 {"en":"영어 문장","ko":"한국어 번역","keepDuplicate":true 또는 false} 형식으로만 반환하세요.',
+  "3. JSON 배열 바깥에 어떤 문자도 쓰지 마세요.",
+  "4. 일반 학습 영상이면 영어 학습에 직접 쓰는 문장만 남기세요.",
+  "5. 일반 학습 영상이면 시작 인사, 영상 소개, 광고, 구독 유도, 동기부여 멘트, 교재 홍보, 강의 홍보, 설명용 한국어 서론, 설명용 한국어 마무리, 번호 읽기, 반복 안내, 따라 읽기 안내, 해설 멘트는 전부 제거하세요.",
+  "6. 일반 학습 영상이면 같은 영어 문장이 반복돼도 한 번만 남기고 keepDuplicate는 false로 두세요.",
+  "7. 일반 학습 영상이면 잘린 영어 문장은 문맥상 자연스럽게 복원하세요.",
+  "8. 노래/가사라면 후렴, 훅, 브리지처럼 반복되는 가사를 순서대로 그대로 유지하고 합치지 마세요.",
+  "9. 노래/가사라면 반복되는 줄도 삭제하지 말고 keepDuplicate를 true로 두세요.",
+  "10. 노래/가사라면 노래 제목은 내부적으로만 추론하고 출력하지 마세요.",
+  "11. 노래/가사라면 자막에 드러난 가사 흐름을 우선 유지하고, 확실한 범위에서만 자연스럽게 복원하세요.",
+  "12. 영어가 없는 한국어 안내 멘트는 제외하세요.",
+  "",
+  "반환 예시:",
+  '[{"en":"How are you?","ko":"어떻게 지내세요?","keepDuplicate":false}]',
   "",
   `현재 청크: ${index + 1}/${total}`,
   "",
   chunk,
- ].join("\n");
+ ].join("\\n");
 
  return requestGeminiWithKey({ model, prompt, apiKey, signal });
 };
@@ -174,8 +223,14 @@ export const dedupePairs = (items: ScriptPair[]) => {
  for (const item of items) {
   const en = item.en.replace(/\s+/g, " ").trim();
   const ko = item.ko.replace(/\s+/g, " ").trim();
+  const keepDuplicate = item.keepDuplicate === true;
 
   if (!en && !ko) continue;
+
+  if (keepDuplicate) {
+   result.push({ en, ko, keepDuplicate: true });
+   continue;
+  }
 
   const key = `${en}|||${ko}`;
   if (seen.has(key)) continue;
@@ -234,7 +289,8 @@ export const callGeminiChunk = async ({
     const parsed = safeParsePairs(raw);
 
     if (parsed.length === 0) {
-     throw new Error("구조화된 JSON 응답 파싱에 실패했습니다.");
+     const preview = raw.replace(/\s+/g, " ").trim().slice(0, 300);
+     throw new Error(preview ? `구조화된 JSON 응답 파싱에 실패했습니다. 응답 미리보기: ${preview}` : "구조화된 JSON 응답 파싱에 실패했습니다.");
     }
 
     onActiveKeyChange?.(currentIndex);

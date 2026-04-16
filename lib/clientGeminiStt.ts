@@ -1,0 +1,541 @@
+type TranscribeAudioParams = {
+ audioUrl: string;
+ apiKey: string;
+ titleHint?: string;
+ signal?: AbortSignal;
+ model?: string;
+ onStatusChange?: (text: string) => void;
+};
+
+type UploadResult = {
+ name: string;
+ uri: string;
+ mimeType: string;
+};
+
+type GeminiFileResponse = {
+ file?: {
+  name?: string;
+  uri?: string;
+  mimeType?: string;
+  state?: string;
+ };
+ name?: string;
+ uri?: string;
+ mimeType?: string;
+ state?: string;
+};
+
+type GeminiGenerateResponse = {
+ candidates?: Array<{
+  content?: {
+   parts?: Array<{
+    text?: string;
+   }>;
+  };
+ }>;
+ error?: {
+  message?: string;
+ };
+};
+
+const GEMINI_AUDIO_MODELS = ["gemini-2.5-flash-lite", "gemini-2.5-flash"] as const;
+const INLINE_AUDIO_LIMIT = 18 * 1024 * 1024;
+const MAX_AUTO_RETRY_MS = 1000 * 60 * 30;
+
+export const transcribeAudioWithGemini = async ({ audioUrl, apiKey, titleHint = "", signal, model, onStatusChange }: TranscribeAudioParams) => {
+ const audioResponse = await fetch(audioUrl, {
+  method: "GET",
+  signal,
+  cache: "no-store",
+ });
+
+ if (!audioResponse.ok) {
+  throw new Error(`오디오 파일을 불러오지 못했습니다. (${audioResponse.status})`);
+ }
+
+ const audioBlob = await audioResponse.blob();
+ const mimeType = audioBlob.type || guessMimeTypeFromUrl(audioUrl) || "audio/mp4";
+ const models = model ? [model, ...GEMINI_AUDIO_MODELS.filter((item) => item !== model)] : [...GEMINI_AUDIO_MODELS];
+
+ if (audioBlob.size <= INLINE_AUDIO_LIMIT) {
+  return runWithModelFallbackAndRetry({
+   models,
+   signal,
+   onStatusChange,
+   runner: async (currentModel) => {
+    return requestInlineAudioTranscript({
+     audioBlob,
+     mimeType,
+     apiKey,
+     model: currentModel,
+     titleHint,
+     signal,
+    });
+   },
+  });
+ }
+
+ const uploadedFile = await uploadFileToGemini({
+  audioBlob,
+  mimeType,
+  apiKey,
+  displayName: extractFileName(audioUrl),
+  signal,
+ });
+
+ try {
+  await waitForFileReady({
+   name: uploadedFile.name,
+   apiKey,
+   signal,
+  });
+
+  return runWithModelFallbackAndRetry({
+   models,
+   signal,
+   onStatusChange,
+   runner: async (currentModel) => {
+    return requestUploadedAudioTranscript({
+     fileUri: uploadedFile.uri,
+     mimeType: uploadedFile.mimeType,
+     apiKey,
+     model: currentModel,
+     titleHint,
+     signal,
+    });
+   },
+  });
+ } finally {
+  await deleteGeminiFile({
+   name: uploadedFile.name,
+   apiKey,
+   signal,
+  }).catch(() => {});
+ }
+};
+
+const runWithModelFallbackAndRetry = async ({
+ models,
+ signal,
+ onStatusChange,
+ runner,
+}: {
+ models: string[];
+ signal?: AbortSignal;
+ onStatusChange?: (text: string) => void;
+ runner: (model: string) => Promise<string>;
+}) => {
+ const startedAt = Date.now();
+ const triedMessages: string[] = [];
+ let modelIndex = 0;
+
+ while (true) {
+  if (signal?.aborted) {
+   throw new DOMException("Aborted", "AbortError");
+  }
+
+  const currentModel = models[Math.min(modelIndex, models.length - 1)];
+
+  try {
+   onStatusChange?.(modelIndex === 0 ? "음성 인식 중" : `음성 인식 중 (${currentModel})`);
+   return await runner(currentModel);
+  } catch (error) {
+   if (error instanceof DOMException && error.name === "AbortError") {
+    throw error;
+   }
+
+   const message = error instanceof Error ? error.message : "알 수 없는 오류";
+   triedMessages.push(`${currentModel}: ${message}`);
+
+   const elapsed = Date.now() - startedAt;
+   if (elapsed >= MAX_AUTO_RETRY_MS) {
+    throw new Error(`음성 인식 자동 재시도 시간이 초과되었습니다.\n${triedMessages.join("\n")}`);
+   }
+
+   if (!isRetryableQuotaError(message)) {
+    if (modelIndex < models.length - 1) {
+     modelIndex += 1;
+     onStatusChange?.(`다른 모델로 재시도 중 (${models[modelIndex]})`);
+     await sleep(1200);
+     continue;
+    }
+
+    throw error;
+   }
+
+   const retrySeconds = extractRetrySeconds(message) ?? getBackoffSeconds(elapsed);
+
+   if (modelIndex < models.length - 1) {
+    modelIndex += 1;
+    onStatusChange?.(`${Math.ceil(retrySeconds)}초 뒤 다른 모델로 재시도`);
+    await sleep((retrySeconds + 1) * 1000);
+    continue;
+   }
+
+   onStatusChange?.(`${Math.ceil(retrySeconds)}초 뒤 자동 재시도`);
+   await sleep((retrySeconds + 1) * 1000);
+  }
+ }
+};
+
+const requestInlineAudioTranscript = async ({
+ audioBlob,
+ mimeType,
+ apiKey,
+ model,
+ titleHint,
+ signal,
+}: {
+ audioBlob: Blob;
+ mimeType: string;
+ apiKey: string;
+ model: string;
+ titleHint: string;
+ signal?: AbortSignal;
+}) => {
+ const audioBase64 = await blobToBase64(audioBlob);
+ const prompt = buildTranscriptPrompt(titleHint);
+
+ const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+  method: "POST",
+  headers: {
+   "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+   contents: [
+    {
+     parts: [
+      { text: prompt },
+      {
+       inline_data: {
+        mime_type: mimeType,
+        data: audioBase64,
+       },
+      },
+     ],
+    },
+   ],
+   generationConfig: {
+    temperature: 0,
+   },
+  }),
+  signal,
+ });
+
+ const data = (await response.json().catch(() => null)) as GeminiGenerateResponse | null;
+
+ if (!response.ok) {
+  throw new Error(extractGeminiErrorMessage(data, response.status));
+ }
+
+ const text = extractGeminiText(data);
+
+ if (!text) {
+  throw new Error("Gemini STT 응답이 비어 있습니다.");
+ }
+
+ return normalizeTranscriptText(text);
+};
+
+const requestUploadedAudioTranscript = async ({
+ fileUri,
+ mimeType,
+ apiKey,
+ model,
+ titleHint,
+ signal,
+}: {
+ fileUri: string;
+ mimeType: string;
+ apiKey: string;
+ model: string;
+ titleHint: string;
+ signal?: AbortSignal;
+}) => {
+ const prompt = buildTranscriptPrompt(titleHint);
+
+ const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+  method: "POST",
+  headers: {
+   "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+   contents: [
+    {
+     parts: [
+      { text: prompt },
+      {
+       file_data: {
+        mime_type: mimeType,
+        file_uri: fileUri,
+       },
+      },
+     ],
+    },
+   ],
+   generationConfig: {
+    temperature: 0,
+   },
+  }),
+  signal,
+ });
+
+ const data = (await response.json().catch(() => null)) as GeminiGenerateResponse | null;
+
+ if (!response.ok) {
+  throw new Error(extractGeminiErrorMessage(data, response.status));
+ }
+
+ const text = extractGeminiText(data);
+
+ if (!text) {
+  throw new Error("Gemini STT 응답이 비어 있습니다.");
+ }
+
+ return normalizeTranscriptText(text);
+};
+
+const uploadFileToGemini = async ({
+ audioBlob,
+ mimeType,
+ apiKey,
+ displayName,
+ signal,
+}: {
+ audioBlob: Blob;
+ mimeType: string;
+ apiKey: string;
+ displayName: string;
+ signal?: AbortSignal;
+}): Promise<UploadResult> => {
+ const startResponse = await fetch(`https://generativelanguage.googleapis.com/upload/v1beta/files?key=${encodeURIComponent(apiKey)}`, {
+  method: "POST",
+  headers: {
+   "X-Goog-Upload-Protocol": "resumable",
+   "X-Goog-Upload-Command": "start",
+   "X-Goog-Upload-Header-Content-Length": String(audioBlob.size),
+   "X-Goog-Upload-Header-Content-Type": mimeType,
+   "Content-Type": "application/json",
+  },
+  body: JSON.stringify({
+   file: {
+    display_name: displayName,
+   },
+  }),
+  signal,
+ });
+
+ if (!startResponse.ok) {
+  const data = (await startResponse.json().catch(() => null)) as GeminiGenerateResponse | null;
+  throw new Error(extractGeminiErrorMessage(data, startResponse.status));
+ }
+
+ const uploadUrl = startResponse.headers.get("x-goog-upload-url");
+
+ if (!uploadUrl) {
+  throw new Error("Gemini Files 업로드 URL을 받지 못했습니다.");
+ }
+
+ const uploadResponse = await fetch(uploadUrl, {
+  method: "POST",
+  headers: {
+   "X-Goog-Upload-Offset": "0",
+   "X-Goog-Upload-Command": "upload, finalize",
+   "Content-Length": String(audioBlob.size),
+  },
+  body: audioBlob,
+  signal,
+ });
+
+ const uploadData = (await uploadResponse.json().catch(() => null)) as GeminiFileResponse | null;
+
+ if (!uploadResponse.ok) {
+  throw new Error(extractGeminiErrorMessage(uploadData, uploadResponse.status));
+ }
+
+ const file = uploadData && typeof uploadData === "object" && uploadData.file ? uploadData.file : uploadData;
+
+ if (!file || typeof file !== "object") {
+  throw new Error("Gemini Files 업로드 결과를 읽지 못했습니다.");
+ }
+
+ const name = typeof file.name === "string" ? file.name : "";
+ const uri = typeof file.uri === "string" ? file.uri : "";
+ const uploadedMimeType = typeof file.mimeType === "string" ? file.mimeType : mimeType;
+
+ if (!name || !uri) {
+  throw new Error("Gemini Files 업로드 결과가 올바르지 않습니다.");
+ }
+
+ return {
+  name,
+  uri,
+  mimeType: uploadedMimeType,
+ };
+};
+
+const waitForFileReady = async ({ name, apiKey, signal }: { name: string; apiKey: string; signal?: AbortSignal }) => {
+ for (let i = 0; i < 40; i += 1) {
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/${name}?key=${encodeURIComponent(apiKey)}`, {
+   method: "GET",
+   signal,
+   cache: "no-store",
+  });
+
+  const data = (await response.json().catch(() => null)) as GeminiFileResponse | null;
+
+  if (!response.ok) {
+   throw new Error(extractGeminiErrorMessage(data, response.status));
+  }
+
+  const file = data && typeof data === "object" && data.file ? data.file : data;
+  const state = typeof file?.state === "string" ? file.state : "";
+
+  if (!state || state === "ACTIVE") {
+   return;
+  }
+
+  if (state !== "PROCESSING") {
+   throw new Error(`Gemini Files 상태가 비정상적입니다: ${state}`);
+  }
+
+  await sleep(1500);
+ }
+};
+
+const deleteGeminiFile = async ({ name, apiKey, signal }: { name: string; apiKey: string; signal?: AbortSignal }) => {
+ await fetch(`https://generativelanguage.googleapis.com/v1beta/${name}?key=${encodeURIComponent(apiKey)}`, {
+  method: "DELETE",
+  signal,
+ });
+};
+
+const buildTranscriptPrompt = (titleHint: string) => {
+ const normalizedTitleHint = titleHint.trim();
+
+ return [
+  "다음 오디오의 들리는 말만 텍스트로 옮기세요.",
+  "설명, 요약, 해설, 제목, 머리말 없이 전사 텍스트만 출력하세요.",
+  "문장 순서를 유지하세요.",
+  "노래라면 후렴과 반복 가사를 합치지 말고 들리는 순서대로 유지하세요.",
+  normalizedTitleHint ? `제목 힌트: ${normalizedTitleHint}` : "",
+ ]
+  .filter(Boolean)
+  .join("\n");
+};
+
+const extractGeminiText = (data: unknown) => {
+ if (!data || typeof data !== "object") return "";
+
+ const candidates = "candidates" in data && Array.isArray(data.candidates) ? data.candidates : [];
+ const firstCandidate = candidates[0];
+
+ if (!firstCandidate || typeof firstCandidate !== "object") return "";
+
+ const content = "content" in firstCandidate ? firstCandidate.content : null;
+ if (!content || typeof content !== "object") return "";
+
+ const parts = "parts" in content && Array.isArray(content.parts) ? content.parts : [];
+
+ return parts
+  .map((part: unknown) => {
+   if (!part || typeof part !== "object") return "";
+   return "text" in part && typeof part.text === "string" ? part.text : "";
+  })
+  .join("")
+  .trim();
+};
+
+const extractGeminiErrorMessage = (data: unknown, status: number) => {
+ if (
+  data &&
+  typeof data === "object" &&
+  "error" in data &&
+  data.error &&
+  typeof data.error === "object" &&
+  "message" in data.error &&
+  typeof data.error.message === "string"
+ ) {
+  return data.error.message;
+ }
+
+ return `Gemini 요청 실패 (${status})`;
+};
+
+const isRetryableQuotaError = (message: string) => {
+ const lower = message.toLowerCase();
+
+ return (
+  lower.includes("quota exceeded") ||
+  lower.includes("resource exhausted") ||
+  lower.includes("rate limit") ||
+  lower.includes("please retry in") ||
+  lower.includes("too many requests")
+ );
+};
+
+const extractRetrySeconds = (message: string) => {
+ const match = message.match(/Please retry in\s+([\d.]+)s/i);
+ if (!match) return null;
+
+ const seconds = Math.ceil(Number(match[1]));
+ if (!Number.isFinite(seconds) || seconds <= 0) return null;
+
+ return seconds;
+};
+
+const getBackoffSeconds = (elapsedMs: number) => {
+ if (elapsedMs < 1000 * 60 * 3) return 15;
+ if (elapsedMs < 1000 * 60 * 10) return 30;
+ return 60;
+};
+
+const blobToBase64 = async (blob: Blob) => {
+ const buffer = await blob.arrayBuffer();
+ const bytes = new Uint8Array(buffer);
+ let binary = "";
+ const chunkSize = 0x8000;
+
+ for (let i = 0; i < bytes.length; i += chunkSize) {
+  const chunk = bytes.subarray(i, i + chunkSize);
+  binary += String.fromCharCode(...chunk);
+ }
+
+ return btoa(binary);
+};
+
+const normalizeTranscriptText = (text: string) => {
+ return text
+  .replace(/\r/g, "")
+  .split("\n")
+  .map((line) => line.trim())
+  .filter(Boolean)
+  .join("\n")
+  .trim();
+};
+
+const extractFileName = (audioUrl: string) => {
+ try {
+  const url = new URL(audioUrl);
+  const lastSegment = url.pathname.split("/").pop() || "audio-file";
+  return decodeURIComponent(lastSegment);
+ } catch {
+  return "audio-file";
+ }
+};
+
+const guessMimeTypeFromUrl = (audioUrl: string) => {
+ const lower = audioUrl.toLowerCase();
+
+ if (lower.endsWith(".m4a") || lower.endsWith(".mp4")) return "audio/mp4";
+ if (lower.endsWith(".webm")) return "audio/webm";
+ if (lower.endsWith(".mp3")) return "audio/mpeg";
+ if (lower.endsWith(".wav")) return "audio/wav";
+ if (lower.endsWith(".ogg")) return "audio/ogg";
+ if (lower.endsWith(".flac")) return "audio/flac";
+
+ return "";
+};
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
