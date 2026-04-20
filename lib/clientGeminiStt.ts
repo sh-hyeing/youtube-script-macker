@@ -234,7 +234,13 @@ const runWithModelAndKeyFallbackAndRetry = async ({
     if (isRetryableQuotaError(message)) {
      const retrySeconds = extractRetrySeconds(message) ?? getBackoffSeconds(Date.now() - startedAt);
      lastRetrySeconds = retrySeconds;
-     onStatusChange?.(`${Math.ceil(retrySeconds)}초 뒤 다음 키로 재시도`);
+
+     if (message.toLowerCase().includes("service unavailable") || message.includes("(503)")) {
+      onStatusChange?.(`${Math.ceil(retrySeconds)}초 뒤 서버 응답을 다시 시도합니다`);
+     } else {
+      onStatusChange?.(`${Math.ceil(retrySeconds)}초 뒤 다음 키로 재시도`);
+     }
+
      await sleep((retrySeconds + 1) * 1000);
      continue;
     }
@@ -510,12 +516,10 @@ const buildTranscriptPrompt = (titleHint: string) => {
 
  return [
   "다음 오디오의 들리는 말만 보수적으로 전사하세요.",
-  "설명, 요약, 해설, 제목, 머리말 없이 전사 텍스트만 출력하세요.",
   "들리지 않거나 확실하지 않은 부분은 추측해서 채우지 말고 생략하세요.",
-  "외부 지식, 기억, 알려진 가사를 이용해 보완하지 마세요.",
-  "같은 구절의 반복은 실제로 다시 또렷하게 들릴 때만 적고, 반복을 추정해서 늘리지 마세요.",
+  "노래/가사라면 외부 지식, 기억, 알려진 가사를 이용해 보완하지 마세요.",
+  "노래/가사라면 같은 구절의 반복은 실제로 다시 또렷하게 들릴 때만 적고, 반복을 추정해서 늘리지 마세요.",
   "문장 순서를 유지하세요.",
-  "번역문은 한국어로 자연스럽게 읽혀야 하지만, 원문의 화자 성격, 감정선, 높임 수준, 거친 말투나 부드러운 말투는 가능한 한 유지하세요.",
   normalizedTitleHint ? `제목 힌트: ${normalizedTitleHint}` : "",
  ]
   .filter(Boolean)
@@ -557,6 +561,18 @@ const extractGeminiErrorMessage = (data: unknown, status: number) => {
   return data.error.message;
  }
 
+ if (status === 429) {
+  return "Gemini 요청 한도에 도달했습니다. 잠시 후 다시 시도해주세요.";
+ }
+
+ if (status === 503) {
+  return "Gemini 서버가 일시적으로 응답하지 않습니다. 잠시 후 다시 시도해주세요. (503)";
+ }
+
+ if (status === 500 || status === 502 || status === 504) {
+  return `Gemini 서버가 일시적으로 불안정합니다. 잠시 후 다시 시도해주세요. (${status})`;
+ }
+
  return `Gemini 요청 실패 (${status})`;
 };
 
@@ -574,7 +590,18 @@ const isRetryableQuotaError = (message: string) => {
   lower.includes("resource exhausted") ||
   lower.includes("rate limit") ||
   lower.includes("please retry in") ||
-  lower.includes("too many requests")
+  lower.includes("too many requests") ||
+  lower.includes("service unavailable") ||
+  lower.includes("temporarily unavailable") ||
+  lower.includes("server is overloaded") ||
+  lower.includes("overloaded") ||
+  lower.includes("backend error") ||
+  lower.includes("internal error") ||
+  lower.includes("try again later") ||
+  lower.includes("(500)") ||
+  lower.includes("(502)") ||
+  lower.includes("(503)") ||
+  lower.includes("(504)")
  );
 };
 
