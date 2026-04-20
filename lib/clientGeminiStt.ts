@@ -511,8 +511,19 @@ const deleteGeminiFile = async ({ name, apiKey, signal }: { name: string; apiKey
  });
 };
 
+const sanitizeTitleHint = (value: string) => {
+ const cleaned = value
+  .replace(/\u0000/g, "")
+  .replace(/[\r\n\t]+/g, " ")
+  .replace(/\s+/g, " ")
+  .replace(/0{20,}/g, "")
+  .trim();
+
+ return cleaned.slice(0, 160);
+};
+
 const buildTranscriptPrompt = (titleHint: string) => {
- const normalizedTitleHint = titleHint.trim();
+ const normalizedTitleHint = sanitizeTitleHint(titleHint);
 
  return [
   "다음 오디오의 들리는 말만 보수적으로 전사하세요.",
