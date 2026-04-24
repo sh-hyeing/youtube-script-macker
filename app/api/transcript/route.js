@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
 
 function parseYoutubeStartSeconds(url) {
  const rawTime = url.searchParams.get("t") || url.searchParams.get("start") || "";

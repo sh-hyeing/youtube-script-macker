@@ -396,7 +396,7 @@ export default function Page() {
  };
 
  const extractTranscript = async (signal?: AbortSignal) => {
- const res = await fetch("/api/transcript", {
+  const res = await fetch("/api/transcript", {
    method: "POST",
    headers: {
     "Content-Type": "application/json",
@@ -405,15 +405,7 @@ export default function Page() {
    signal,
   });
 
-  const rawText = await res.text();
-  let data: Partial<TranscriptResponse> & { error?: string; details?: unknown } = {};
-
-  try {
-   data = rawText ? JSON.parse(rawText) : {};
-  } catch {
-   const preview = rawText.replace(/\s+/g, " ").trim().slice(0, 300);
-   throw new Error(preview || "자막 서버가 JSON이 아닌 응답을 반환했습니다.");
-  }
+  const data = await res.json();
 
   if (!res.ok) {
    throw new Error(data.error || "자막 추출에 실패했습니다.");
