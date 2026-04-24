@@ -79,10 +79,28 @@ export const requestGeminiWithKey = async ({ model, prompt, apiKey, signal }: Re
   signal,
  });
 
- const data = await response.json();
+ const rawText = await response.text();
+ let data: {
+  candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+  error?: { message?: string };
+ } | null = null;
+
+ if (rawText.trim()) {
+  try {
+   data = JSON.parse(rawText);
+  } catch {
+   if (!response.ok) {
+    const error = new Error(buildGeminiHttpErrorMessage(response.status)) as GeminiError;
+    error.status = response.status;
+    throw error;
+   }
+
+   throw new Error("Gemini 응답 형식을 읽지 못했습니다. 잠시 후 다시 시도해주세요.");
+  }
+ }
 
  if (!response.ok) {
-  const message = data?.error?.message || `Gemini 요청 실패 (${response.status})`;
+  const message = buildGeminiHttpErrorMessage(response.status, data?.error?.message);
   const error = new Error(message) as GeminiError;
   error.status = response.status;
   throw error;
@@ -99,6 +117,24 @@ export const requestGeminiWithKey = async ({ model, prompt, apiKey, signal }: Re
  }
 
  return text;
+};
+
+const buildGeminiHttpErrorMessage = (status: number, upstreamMessage = "") => {
+ const withUpstreamMessage = (message: string) => (upstreamMessage ? `${message} ${upstreamMessage}` : message);
+
+ if (status === 429) {
+  return withUpstreamMessage("Gemini 요청 한도에 도달했습니다. 잠시 후 다시 시도해주세요. (429)");
+ }
+
+ if (status === 503) {
+  return withUpstreamMessage("Gemini 서버가 일시적으로 응답하지 않습니다. 잠시 후 다시 시도해주세요. (503)");
+ }
+
+ if (status === 500 || status === 502 || status === 504) {
+  return withUpstreamMessage(`Gemini 서버가 일시적으로 불안정합니다. 잠시 후 다시 시도해주세요. (${status})`);
+ }
+
+ return upstreamMessage || `Gemini 요청 실패 (${status})`;
 };
 
 export const safeParsePairs = (raw: string): ScriptPair[] => {
