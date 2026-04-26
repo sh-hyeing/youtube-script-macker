@@ -233,7 +233,7 @@ const runWithModelAndKeyFallbackAndRetry = async ({
 
     if (isRetryableQuotaError(message)) {
      const retrySeconds = extractRetrySeconds(message) ?? getBackoffSeconds(Date.now() - startedAt);
-     lastRetrySeconds = retrySeconds;
+     lastRetrySeconds = lastRetrySeconds === null ? retrySeconds : Math.max(lastRetrySeconds, retrySeconds);
 
      if (message.toLowerCase().includes("service unavailable") || message.includes("(503)")) {
       onStatusChange?.(`${Math.ceil(retrySeconds)}초 뒤 서버 응답을 다시 시도합니다`);
@@ -241,7 +241,14 @@ const runWithModelAndKeyFallbackAndRetry = async ({
       onStatusChange?.(`${Math.ceil(retrySeconds)}초 뒤 다음 키로 재시도`);
      }
 
-     await sleep((retrySeconds + 1) * 1000);
+     if (keyLoop < apiKeys.length - 1) {
+      onStatusChange?.("다음 API 키로 즉시 전환 중");
+     } else if (modelIndex < models.length - 1) {
+      onStatusChange?.(`다음 모델로 즉시 전환 중 (${models[modelIndex + 1]})`);
+     } else {
+      onStatusChange?.(`${Math.ceil(retrySeconds)}초 대기 후 모든 키 재시도`);
+     }
+
      continue;
     }
 
@@ -267,7 +274,6 @@ const runWithModelAndKeyFallbackAndRetry = async ({
   if (modelIndex < models.length - 1) {
    modelIndex += 1;
    onStatusChange?.(`다른 모델로 재시도 중 (${models[modelIndex]})`);
-   await sleep(1200);
    continue;
   }
 

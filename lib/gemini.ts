@@ -53,6 +53,11 @@ type ProcessChunksParams = {
  onPersistActiveKey?: (index: number) => void;
  onPairsChange?: (pairs: ScriptPair[]) => void;
  onResumeIndexChange?: (index: number) => void;
+ preserveMarkedDuplicates?: boolean;
+};
+
+type DedupePairsOptions = {
+ preserveMarkedDuplicates?: boolean;
 };
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -222,7 +227,7 @@ export const extractRetrySeconds = (message: string) => {
  return seconds;
 };
 
-export const dedupePairs = (items: ScriptPair[]) => {
+export const dedupePairs = (items: ScriptPair[], { preserveMarkedDuplicates = true }: DedupePairsOptions = {}) => {
  const seen = new Set<string>();
  const result: ScriptPair[] = [];
 
@@ -233,12 +238,12 @@ export const dedupePairs = (items: ScriptPair[]) => {
 
   if (!en && !ko) continue;
 
-  if (keepDuplicate) {
+  if (keepDuplicate && preserveMarkedDuplicates) {
    result.push({ en, ko, keepDuplicate: true });
    continue;
   }
 
-  const key = `${en}|||${ko}`;
+  const key = normalizeEnglishDedupeKey(en) || `${en}|||${ko}`;
   if (seen.has(key)) continue;
 
   seen.add(key);
@@ -246,6 +251,15 @@ export const dedupePairs = (items: ScriptPair[]) => {
  }
 
  return result;
+};
+
+const normalizeEnglishDedupeKey = (value: string) => {
+ return value
+  .toLowerCase()
+  .replace(/[’‘]/g, "'")
+  .replace(/[^a-z0-9']+/g, " ")
+  .replace(/\s+/g, " ")
+  .trim();
 };
 
 export const callGeminiChunk = async ({
@@ -260,7 +274,7 @@ export const callGeminiChunk = async ({
  onStatusChange,
  onActiveKeyChange,
  onPersistActiveKey,
- sleepMs = 300,
+ sleepMs = 0,
 }: CallGeminiChunkParams) => {
  if (apiKeys.length === 0) {
   throw new Error("저장된 Gemini API 키가 없습니다.");
@@ -324,7 +338,9 @@ export const callGeminiChunk = async ({
     }
 
     onStatusChange?.("다음 키로 재시도 중");
-    await sleep(sleepMs);
+    if (sleepMs > 0) {
+     await sleep(sleepMs);
+    }
    }
   }
  }
@@ -356,6 +372,7 @@ export const processChunks = async ({
  onPersistActiveKey,
  onPairsChange,
  onResumeIndexChange,
+ preserveMarkedDuplicates = true,
 }: ProcessChunksParams) => {
  const mergedPairs: ScriptPair[] = [...initialPairs];
  let currentActiveKeyIndex = activeKeyIndex;
@@ -385,7 +402,7 @@ export const processChunks = async ({
    });
 
    mergedPairs.push(...chunkPairs);
-   const nextPairs = dedupePairs([...mergedPairs]);
+   const nextPairs = dedupePairs([...mergedPairs], { preserveMarkedDuplicates });
    onPairsChange?.(nextPairs);
    onResumeIndexChange?.(i + 1);
   } catch (error) {

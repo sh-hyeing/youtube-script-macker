@@ -29,14 +29,19 @@ Thumbs.db
 
 # logs
 *.log
+*.out
+*.err
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
+ytdlp-local*.log
 
 # temp files
 *.tmp
 *.temp
+tools/
+.turbo/
 
 # env files
 .env*

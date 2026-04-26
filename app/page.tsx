@@ -13,10 +13,19 @@ type TranscriptResponse = {
  chunkCount: number;
  title?: string;
  fileName?: string;
+ durationSeconds?: number;
+ sttMode?: string;
  transcriptSource?: string;
  needsClientStt?: boolean;
  audioUrl?: string;
  audioMimeType?: string;
+ audioSegments?: Array<{
+  url?: string;
+  mimeType?: string;
+  index?: number;
+  startSeconds?: number;
+  endSeconds?: number;
+ }>;
  expiresAt?: number;
 };
 
@@ -51,6 +60,7 @@ const getRunModelConfig = ({ title, fileName, chunkCount }: { title?: string; fi
   return {
    primaryModel: FLASH_MODEL,
    fallbackModel: FLASH_LITE_MODEL,
+   preserveMarkedDuplicates: true,
   };
  }
 
@@ -58,12 +68,14 @@ const getRunModelConfig = ({ title, fileName, chunkCount }: { title?: string; fi
   return {
    primaryModel: FLASH_LITE_MODEL,
    fallbackModel: FLASH_MODEL,
+   preserveMarkedDuplicates: false,
   };
  }
 
  return {
   primaryModel: FLASH_MODEL,
   fallbackModel: FLASH_LITE_MODEL,
+  preserveMarkedDuplicates: false,
  };
 };
 
@@ -73,6 +85,8 @@ const LONG_VIDEO_CHUNK_THRESHOLD = 25;
 const STORAGE_KEY = "gemini_api_keys_v1";
 const STORAGE_ACTIVE_KEY = "gemini_active_key_index_v1";
 const STT_CACHE_PREFIX = "gemini_stt_cache_v1:";
+const RESULT_CACHE_PREFIX = "study_result_cache_v1:";
+const MAX_STT_SEGMENT_CONCURRENCY = 3;
 
 const chunkTextByLine = (text: string, maxLength = 2800) => {
  if (!text.trim()) return [];
@@ -109,18 +123,59 @@ const chunkTextByLine = (text: string, maxLength = 2800) => {
  return chunks;
 };
 
-const getSttCacheKey = (videoUrl: string) => `${STT_CACHE_PREFIX}${videoUrl.trim()}`;
+const getContiguousTranscriptText = (parts: string[]) => {
+ const contiguousParts: string[] = [];
 
-const readCachedSttText = (videoUrl: string) => {
- try {
-  const raw = sessionStorage.getItem(getSttCacheKey(videoUrl));
-  if (!raw) return "";
+ for (const part of parts) {
+  if (typeof part !== "string") {
+   break;
+  }
 
-  const parsed = JSON.parse(raw);
-  return parsed && typeof parsed.text === "string" ? parsed.text : "";
- } catch {
+  contiguousParts.push(part.trim());
+ }
+
+ return contiguousParts.filter(Boolean).join("\n").trim();
+};
+
+const normalizeYouTubeProcessingUrl = (value: string) => {
+ const raw = value.trim();
+
+ if (!raw) {
   return "";
  }
+
+ try {
+  const url = new URL(raw);
+  const host = url.hostname.replace(/^www\./, "").toLowerCase();
+
+  if (host === "youtu.be") {
+   const videoId = url.pathname.split("/").filter(Boolean)[0];
+   return videoId ? `https://www.youtube.com/watch?v=${videoId}` : raw;
+  }
+
+  if (host === "youtube.com" || host.endsWith(".youtube.com")) {
+   const shortsMatch = url.pathname.match(/^\/shorts\/([^/]+)/i);
+   if (shortsMatch?.[1]) {
+    return `https://www.youtube.com/watch?v=${shortsMatch[1]}`;
+   }
+
+   const videoId = url.searchParams.get("v");
+   return videoId ? `https://www.youtube.com/watch?v=${videoId}` : raw;
+  }
+
+  return raw;
+ } catch {
+  return raw;
+ }
+};
+
+const getSttCacheKey = (videoUrl: string) => `${STT_CACHE_PREFIX}${normalizeYouTubeProcessingUrl(videoUrl)}`;
+const getResultCacheKey = (videoUrl: string) => `${RESULT_CACHE_PREFIX}${normalizeYouTubeProcessingUrl(videoUrl)}`;
+
+type CachedStudyResult = {
+ originalScript: string;
+ pairs: ScriptPair[];
+ savedAt: number;
 };
 
 const writeCachedSttText = (videoUrl: string, text: string) => {
@@ -133,6 +188,91 @@ const writeCachedSttText = (videoUrl: string, text: string) => {
    }),
   );
  } catch {}
+};
+
+const clearCachedSttText = (videoUrl: string) => {
+ try {
+  sessionStorage.removeItem(getSttCacheKey(videoUrl));
+ } catch {}
+};
+
+const readCachedStudyResult = (videoUrl: string): CachedStudyResult | null => {
+ try {
+  const raw = localStorage.getItem(getResultCacheKey(videoUrl));
+  if (!raw) return null;
+
+  const parsed = JSON.parse(raw);
+  const originalScript = typeof parsed?.originalScript === "string" ? parsed.originalScript : "";
+  const pairs = Array.isArray(parsed?.pairs)
+   ? parsed.pairs
+     .map((item: unknown) => {
+      const entry = item && typeof item === "object" ? (item as { en?: unknown; ko?: unknown; keepDuplicate?: unknown }) : {};
+      const en = typeof entry.en === "string" ? entry.en : "";
+      const ko = typeof entry.ko === "string" ? entry.ko : "";
+      const keepDuplicate = entry.keepDuplicate === true;
+
+      if (!en && !ko) {
+       return null;
+      }
+
+      return keepDuplicate ? { en, ko, keepDuplicate: true } : { en, ko };
+     })
+     .filter(Boolean) as ScriptPair[]
+   : [];
+
+  if (!originalScript.trim() && pairs.length === 0) {
+   return null;
+  }
+
+  return {
+   originalScript,
+   pairs,
+   savedAt: typeof parsed?.savedAt === "number" ? parsed.savedAt : 0,
+  };
+ } catch {
+  return null;
+ }
+};
+
+const writeCachedStudyResult = (videoUrl: string, originalScript: string, pairs: ScriptPair[]) => {
+ try {
+  localStorage.setItem(
+   getResultCacheKey(videoUrl),
+   JSON.stringify({
+    originalScript,
+    pairs,
+    savedAt: Date.now(),
+   }),
+  );
+ } catch {}
+};
+
+const parseJsonResponse = async <T,>(response: Response, fallbackMessage: string): Promise<T> => {
+ const rawText = await response.text();
+
+ try {
+  return (rawText ? JSON.parse(rawText) : {}) as T;
+ } catch {
+  const preview = rawText.replace(/\s+/g, " ").trim().slice(0, 300);
+  throw new Error(preview || fallbackMessage);
+ }
+};
+
+const getTranscriptJobStageLabel = (stage?: string) => {
+ switch (stage) {
+  case "metadata":
+   return "영상 정보 확인 중";
+  case "subtitle":
+   return "자막 확인 중";
+  case "audio_download":
+   return "오디오 다운로드 중";
+  case "audio_segment":
+   return "오디오 구간 분할 중";
+  case "queued":
+   return "자막 작업 대기 중";
+  default:
+   return "오디오 준비 중";
+ }
 };
 
 export default function Page() {
@@ -164,9 +304,11 @@ export default function Page() {
 
  const cooldownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
  const resumeRequestedRef = useRef(false);
+ const lastCachedResultUrlRef = useRef("");
  const selectedModelsRef = useRef({
   primaryModel: FLASH_MODEL,
   fallbackModel: FLASH_LITE_MODEL,
+  preserveMarkedDuplicates: false,
  });
 
  useEffect(() => {
@@ -191,6 +333,42 @@ export default function Page() {
    }
   }
  }, []);
+
+ useEffect(() => {
+  if (loadingTranscript || loadingGemini || isCooldownWaiting) {
+   return;
+  }
+
+  const normalizedUrl = normalizeYouTubeProcessingUrl(videoUrl);
+
+  if (!normalizedUrl) {
+   lastCachedResultUrlRef.current = "";
+   return;
+  }
+
+  if (lastCachedResultUrlRef.current === normalizedUrl) {
+   return;
+  }
+
+  lastCachedResultUrlRef.current = normalizedUrl;
+
+  const cachedResult = readCachedStudyResult(normalizedUrl);
+
+  if (!cachedResult) {
+   return;
+  }
+
+  const cachedChunks = chunkTextByLine(cachedResult.originalScript, 2800);
+  setErrorMessage("");
+  setOriginalScript(cachedResult.originalScript);
+  setPairs(cachedResult.pairs);
+  setChunkCount(cachedChunks.length);
+  setSavedTranscriptChunks(cachedChunks);
+  setResumeIndex(cachedChunks.length);
+  setIsPaused(false);
+  setLastRunVideoUrl(normalizedUrl);
+  setStatusText("저장된 결과 불러옴");
+ }, [videoUrl, loadingTranscript, loadingGemini, isCooldownWaiting]);
 
  useEffect(() => {
   if (apiKeys.length === 0) {
@@ -218,10 +396,13 @@ export default function Page() {
  const isBusy = loadingTranscript || loadingGemini || isCooldownWaiting;
 
  const canResume =
-  isPaused && savedTranscriptChunks.length > 0 && resumeIndex < savedTranscriptChunks.length && lastRunVideoUrl.trim() === videoUrl.trim();
+  isPaused &&
+  savedTranscriptChunks.length > 0 &&
+  resumeIndex < savedTranscriptChunks.length &&
+  lastRunVideoUrl.trim() === normalizeYouTubeProcessingUrl(videoUrl);
 
  const canRun = useMemo(() => {
-  return videoUrl.trim().length > 0 && apiKeys.length > 0 && !isBusy;
+  return normalizeYouTubeProcessingUrl(videoUrl).length > 0 && apiKeys.length > 0 && !isBusy;
  }, [videoUrl, apiKeys, isBusy]);
 
  const toggleSidebarSection = (section: keyof typeof sidebarSections) => {
@@ -312,22 +493,90 @@ export default function Page() {
  };
 
  const extractTranscript = async (signal?: AbortSignal) => {
-  const res = await fetch("/api/transcript", {
+  const normalizedProcessingUrl = normalizeYouTubeProcessingUrl(videoUrl);
+  setStatusText("자막 서버 연결 중");
+
+  const configResponse = await fetch("/api/transcript-server", {
+   method: "GET",
+   cache: "no-store",
+   signal,
+  });
+  const configData = await parseJsonResponse<{ baseUrl?: string; error?: string }>(configResponse, "자막 서버 설정 응답을 읽지 못했습니다.");
+
+  if (!configResponse.ok || !configData.baseUrl) {
+   throw new Error(configData.error || "자막 서버 주소를 가져오지 못했습니다.");
+  }
+
+  const transcriptServerBaseUrl = configData.baseUrl.replace(/\/+$/, "");
+
+  setStatusText("자막 작업 준비 중");
+
+  const startResponse = await fetch(`${transcriptServerBaseUrl}/transcript-job/start`, {
    method: "POST",
    headers: {
     "Content-Type": "application/json",
    },
-   body: JSON.stringify({ videoUrl }),
+   body: JSON.stringify({ videoUrl: normalizedProcessingUrl }),
    signal,
   });
+  const startData = await parseJsonResponse<{ jobId?: string; error?: string; details?: string }>(startResponse, "자막 작업 시작 응답을 읽지 못했습니다.");
 
-  const data = await res.json();
-
-  if (!res.ok) {
-   throw new Error(data.error || "자막 추출에 실패했습니다.");
+  if (!startResponse.ok || !startData.jobId) {
+   throw new Error(startData.error || startData.details || "자막 작업을 시작하지 못했습니다.");
   }
 
-  return data as TranscriptResponse;
+  while (true) {
+   if (signal?.aborted) {
+    throw new DOMException("Aborted", "AbortError");
+   }
+
+   const jobResponse = await fetch(`${transcriptServerBaseUrl}/transcript-job/${startData.jobId}`, {
+    method: "GET",
+    cache: "no-store",
+    signal,
+   });
+   const jobData = await parseJsonResponse<{
+    status?: string;
+    stage?: string;
+    result?: Record<string, unknown>;
+    error?: { message?: string } | string;
+   }>(jobResponse, "자막 작업 상태 응답을 읽지 못했습니다.");
+
+   if (!jobResponse.ok) {
+    throw new Error(typeof jobData.error === "string" ? jobData.error : jobData.error?.message || "자막 작업 상태를 확인하지 못했습니다.");
+   }
+
+   if (jobData.status === "failed") {
+    throw new Error(typeof jobData.error === "string" ? jobData.error : jobData.error?.message || "자막 작업에 실패했습니다.");
+   }
+
+   if (jobData.status === "ready" && jobData.result) {
+    const data = jobData.result;
+    const needsClientStt = data.needsClientStt === true;
+    const transcriptText = typeof data.transcript === "string" ? data.transcript : typeof data.text === "string" ? data.text : "";
+    const transcriptChunks = needsClientStt ? [] : chunkTextByLine(transcriptText, 2800);
+
+     return {
+      normalizedUrl: normalizedProcessingUrl,
+      transcriptText: needsClientStt ? "" : transcriptText,
+     transcriptChunks,
+     chunkCount: transcriptChunks.length,
+     title: typeof data.title === "string" ? data.title : "",
+     fileName: typeof data.fileName === "string" ? data.fileName : "",
+     durationSeconds: typeof data.durationSeconds === "number" ? data.durationSeconds : 0,
+     sttMode: typeof data.sttMode === "string" ? data.sttMode : "",
+     transcriptSource: typeof data.transcriptSource === "string" ? data.transcriptSource : needsClientStt ? "client_gemini_stt" : "official_subtitle",
+     needsClientStt,
+     audioUrl: typeof data.audioUrl === "string" ? data.audioUrl : "",
+     audioMimeType: typeof data.audioMimeType === "string" ? data.audioMimeType : "",
+     audioSegments: Array.isArray(data.audioSegments) ? data.audioSegments : [],
+     expiresAt: typeof data.expiresAt === "number" ? data.expiresAt : 0,
+    } as TranscriptResponse;
+   }
+
+   setStatusText(jobData.status === "processing" ? getTranscriptJobStageLabel(jobData.stage) : "자막 작업 대기 중");
+   await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
  };
 
  const startCooldownAndResume = (seconds: number) => {
@@ -360,7 +609,9 @@ export default function Page() {
  };
 
  const startFreshRun = async () => {
-  if (!videoUrl.trim()) {
+  const normalizedProcessingUrl = normalizeYouTubeProcessingUrl(videoUrl);
+
+  if (!normalizedProcessingUrl) {
    setErrorMessage("유튜브 링크를 입력해 주세요.");
    return;
   }
@@ -385,7 +636,8 @@ export default function Page() {
   setSavedTranscriptChunks([]);
   setResumeIndex(0);
   setIsPaused(false);
-  setLastRunVideoUrl(videoUrl.trim());
+  setLastRunVideoUrl(normalizedProcessingUrl);
+  clearCachedSttText(videoUrl);
 
   try {
    setLoadingTranscript(true);
@@ -401,17 +653,76 @@ export default function Page() {
    let finalTranscriptChunks = transcriptData.transcriptChunks || [];
 
    if (transcriptData.needsClientStt) {
-    const cachedText = readCachedSttText(videoUrl);
+    const audioSegments = Array.isArray(transcriptData.audioSegments)
+     ? transcriptData.audioSegments
+       .filter((segment) => segment && typeof segment.url === "string" && segment.url.trim())
+       .sort((a, b) => (a.index ?? 0) - (b.index ?? 0))
+     : [];
 
-    if (cachedText) {
-     finalTranscriptText = cachedText;
-     finalTranscriptChunks = chunkTextByLine(cachedText, 2800);
+    if (audioSegments.length > 0) {
+     const sttParts: string[] = [];
+     let nextSegmentIndex = 0;
+     let completedSegmentCount = 0;
+     let publishedText = "";
+     const sttSegmentConcurrency = Math.min(apiKeys.length, MAX_STT_SEGMENT_CONCURRENCY, audioSegments.length);
+
+     const publishCompletedSegments = () => {
+      const nextText = getContiguousTranscriptText(sttParts);
+
+      if (!nextText || nextText === publishedText) {
+       return;
+      }
+
+      publishedText = nextText;
+      const partialChunks = chunkTextByLine(nextText, 2800);
+      setOriginalScript(nextText);
+      setChunkCount(partialChunks.length);
+      setSavedTranscriptChunks(partialChunks);
+     };
+
+     const runNextSegment = async (): Promise<void> => {
+      while (nextSegmentIndex < audioSegments.length) {
+       if (controller.signal.aborted) {
+        throw new DOMException("Aborted", "AbortError");
+       }
+
+       const segmentIndex = nextSegmentIndex;
+       nextSegmentIndex += 1;
+       const segment = audioSegments[segmentIndex];
+       const segmentActiveKeyIndex = (activeKeyIndex + segmentIndex) % apiKeys.length;
+       setStatusText(`음성 인식 중 (병렬 ${sttSegmentConcurrency}개, ${completedSegmentCount}/${audioSegments.length} 완료, ${segmentIndex + 1}번 구간 처리 중)`);
+
+       const segmentText = await transcribeAudioWithGemini({
+        audioUrl: segment.url || "",
+        apiKeys,
+        activeKeyIndex: segmentActiveKeyIndex,
+        titleHint: transcriptData.title || "",
+        signal: controller.signal,
+        onStatusChange: (text) => setStatusText(`음성 인식 중 (병렬 ${sttSegmentConcurrency}개, ${completedSegmentCount}/${audioSegments.length} 완료, ${segmentIndex + 1}번 구간) · ${text}`),
+        onActiveKeyChange: (index) => {
+         setActiveKeyIndex(index);
+        },
+        onPersistActiveKey: (index) => {
+         localStorage.setItem(STORAGE_ACTIVE_KEY, String(index));
+        },
+       });
+
+       sttParts[segmentIndex] = segmentText.trim();
+       completedSegmentCount += 1;
+       setStatusText(`음성 인식 중 (병렬 ${sttSegmentConcurrency}개, ${completedSegmentCount}/${audioSegments.length} 완료)`);
+       publishCompletedSegments();
+      }
+     };
+
+     await Promise.all(Array.from({ length: sttSegmentConcurrency }, () => runNextSegment()));
+
+     finalTranscriptText = sttParts.join("\n").trim();
+     finalTranscriptChunks = chunkTextByLine(finalTranscriptText, 2800);
+     writeCachedSttText(videoUrl, finalTranscriptText);
+    } else if (!transcriptData.audioUrl) {
+     throw new Error("음성 인식용 오디오 주소를 받지 못했습니다.");
     } else {
-     if (!transcriptData.audioUrl) {
-      throw new Error("음성 인식용 오디오 주소를 받지 못했습니다.");
-     }
-
-     setStatusText("음성 인식 중");
+     setStatusText(transcriptData.sttMode === "single" ? "음성 인식 중 (단일 오디오)" : "음성 인식 중");
 
      const sttText = await transcribeAudioWithGemini({
       audioUrl: transcriptData.audioUrl,
@@ -466,6 +777,7 @@ export default function Page() {
     activeKeyIndex,
     primaryModel: selectedModels.primaryModel,
     fallbackModel: selectedModels.fallbackModel,
+    preserveMarkedDuplicates: selectedModels.preserveMarkedDuplicates,
     onStatusChange: setStatusText,
     onActiveKeyChange: setActiveKeyIndex,
     onPersistActiveKey: (index) => {
@@ -475,9 +787,11 @@ export default function Page() {
     onResumeIndexChange: setResumeIndex,
    });
 
-   setPairs(dedupePairs(mergedPairs));
+   const finalPairs = dedupePairs(mergedPairs, { preserveMarkedDuplicates: selectedModels.preserveMarkedDuplicates });
+   setPairs(finalPairs);
    setResumeIndex(finalTranscriptChunks.length);
    setIsPaused(false);
+   writeCachedStudyResult(videoUrl, finalTranscriptText, finalPairs);
    setStatusText("완료");
   } catch (error) {
    const retryAfterSeconds =
@@ -540,6 +854,7 @@ export default function Page() {
     activeKeyIndex,
     primaryModel: selectedModelsRef.current.primaryModel,
     fallbackModel: selectedModelsRef.current.fallbackModel,
+    preserveMarkedDuplicates: selectedModelsRef.current.preserveMarkedDuplicates,
     onStatusChange: setStatusText,
     onActiveKeyChange: setActiveKeyIndex,
     onPersistActiveKey: (index) => {
@@ -549,9 +864,11 @@ export default function Page() {
     onResumeIndexChange: setResumeIndex,
    });
 
-   setPairs(dedupePairs(mergedPairs));
+   const finalPairs = dedupePairs(mergedPairs, { preserveMarkedDuplicates: selectedModelsRef.current.preserveMarkedDuplicates });
+   setPairs(finalPairs);
    setResumeIndex(savedTranscriptChunks.length);
    setIsPaused(false);
+   writeCachedStudyResult(videoUrl, originalScript, finalPairs);
    setStatusText("완료");
   } catch (error) {
    const retryAfterSeconds =
