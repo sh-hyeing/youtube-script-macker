@@ -62,6 +62,43 @@ type DedupePairsOptions = {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const normalizeComparableText = (value: string) => {
+ return value
+  .normalize("NFKC")
+  .toLowerCase()
+  .replace(/\s+/g, " ")
+  .replace(/[^\p{L}\p{N}]+/gu, "")
+  .trim();
+};
+
+const countMatches = (value: string, pattern: RegExp) => (value.match(pattern) || []).length;
+
+const isLikelyKoreanDominantSource = (value: string) => {
+ const hangulCount = countMatches(value, /[\p{Script=Hangul}]/gu);
+ const latinCount = countMatches(value, /[A-Za-z]/g);
+ const kanaCount = countMatches(value, /[\p{Script=Hiragana}\p{Script=Katakana}]/gu);
+ const hanCount = countMatches(value, /[\p{Script=Han}]/gu);
+ const sourceLikeCount = latinCount + kanaCount + hanCount;
+
+ if (hangulCount === 0) return false;
+ if (sourceLikeCount === 0) return true;
+
+ return hangulCount > sourceLikeCount;
+};
+
+const isValidSourceTargetPair = (en: string, ko: string) => {
+ if (!en || !ko) return false;
+
+ const normalizedEn = normalizeComparableText(en);
+ const normalizedKo = normalizeComparableText(ko);
+
+ if (!normalizedEn || !normalizedKo) return false;
+ if (normalizedEn === normalizedKo) return false;
+ if (isLikelyKoreanDominantSource(en)) return false;
+
+ return true;
+};
+
 export const requestGeminiWithKey = async ({ model, prompt, apiKey, signal }: RequestGeminiParams) => {
  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
   method: "POST",
@@ -115,7 +152,7 @@ export const safeParsePairs = (raw: string): ScriptPair[] => {
     const en = typeof item?.en === "string" ? item.en.trim() : "";
     const ko = typeof item?.ko === "string" ? item.ko.trim() : "";
 
-    if (!en && !ko) return null;
+    if (!isValidSourceTargetPair(en, ko)) return null;
 
     if (item && typeof item === "object" && (item as { keepDuplicate?: unknown }).keepDuplicate === true) {
      return { en, ko, keepDuplicate: true } as ScriptPair;
@@ -236,7 +273,7 @@ export const dedupePairs = (items: ScriptPair[], { preserveMarkedDuplicates = tr
   const ko = item.ko.replace(/\s+/g, " ").trim();
   const keepDuplicate = item.keepDuplicate === true;
 
-  if (!en && !ko) continue;
+  if (!isValidSourceTargetPair(en, ko)) continue;
 
   if (keepDuplicate && preserveMarkedDuplicates) {
    result.push({ en, ko, keepDuplicate: true });
