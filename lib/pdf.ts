@@ -55,12 +55,13 @@ export const downloadStudyScriptPdf = async ({ pairs, videoUrl, filename = "stud
 
  const titleFontSize = 18;
  const metaFontSize = 10;
- const englishFontSize = 11;
- const koreanFontSize = 10;
-
- const lineHeight = 6;
- const blockGap = 3;
- const itemGap = 6;
+ const cellFontSize = 10.5;
+ const lineHeight = 5.8;
+ const cellPaddingX = 4;
+ const cellPaddingY = 3.4;
+ const numberColumnWidth = 14;
+ const englishColumnWidth = (contentWidth - numberColumnWidth) * 0.58;
+ const koreanColumnWidth = contentWidth - numberColumnWidth - englishColumnWidth;
 
  let y = marginTop;
 
@@ -91,38 +92,66 @@ export const downloadStudyScriptPdf = async ({ pairs, videoUrl, filename = "stud
   }
  };
 
+ const drawCellText = (lines: string[], x: number, top: number, width: number, rowHeight: number, align: "left" | "center") => {
+  const safeLines = lines.length > 0 ? lines : [" "];
+  const firstLineY = top + rowHeight / 2 - ((safeLines.length - 1) * lineHeight) / 2;
+  const textX = align === "center" ? x + width / 2 : x + cellPaddingX;
+
+  safeLines.forEach((line, lineIndex) => {
+   const y = firstLineY + lineIndex * lineHeight;
+   const options = align === "center" ? { align: "center" as const, baseline: "middle" as const } : { baseline: "middle" as const };
+   doc.text(line, textX, y, options);
+  });
+ };
+
  drawHeader();
 
  for (let i = 0; i < pairs.length; i += 1) {
   const pair = pairs[i];
-  const num = String(i + 1).padStart(2, "0");
-
-  const englishText = `${num} ${String(pair.en || "")
+  const numberText = String(i + 1);
+  const englishText = String(pair.en || "")
    .replace(/\s+/g, " ")
-   .trim()}`;
+   .trim();
   const koreanText = String(pair.ko || "")
    .replace(/\s+/g, " ")
    .trim();
 
-  doc.setFontSize(englishFontSize);
-  const englishLines = doc.splitTextToSize(englishText, contentWidth);
+  doc.setFontSize(cellFontSize);
+  const numberLines = doc.splitTextToSize(numberText, Math.max(1, numberColumnWidth - cellPaddingX * 2));
+  const englishLines = doc.splitTextToSize(englishText || " ", Math.max(1, englishColumnWidth - cellPaddingX * 2));
+  const koreanLines = doc.splitTextToSize(koreanText || " ", Math.max(1, koreanColumnWidth - cellPaddingX * 2));
 
-  doc.setFontSize(koreanFontSize);
-  const koreanLines = doc.splitTextToSize(koreanText, contentWidth);
+  const rowContentHeight = Math.max(numberLines.length, englishLines.length, koreanLines.length) * lineHeight;
+  const rowHeight = rowContentHeight + cellPaddingY * 2;
 
-  const itemHeight = englishLines.length * lineHeight + blockGap + koreanLines.length * lineHeight + itemGap;
+  ensurePageSpace(rowHeight);
 
-  ensurePageSpace(itemHeight);
+  const rowTop = y;
+  const numberX = marginLeft;
+  const englishX = numberX + numberColumnWidth;
+  const koreanX = englishX + englishColumnWidth;
+  const rowBottom = rowTop + rowHeight;
 
-  doc.setTextColor(30, 30, 30);
-  doc.setFontSize(englishFontSize);
-  doc.text(englishLines, marginLeft, y);
-  y += englishLines.length * lineHeight + blockGap;
+  doc.setDrawColor(220, 224, 231);
+  doc.setLineWidth(0.2);
+  doc.line(numberX, rowTop, pageWidth - marginRight, rowTop);
+  doc.line(numberX, rowBottom, pageWidth - marginRight, rowBottom);
+  doc.line(numberX, rowTop, numberX, rowBottom);
+  doc.line(englishX, rowTop, englishX, rowBottom);
+  doc.line(koreanX, rowTop, koreanX, rowBottom);
+  doc.line(pageWidth - marginRight, rowTop, pageWidth - marginRight, rowBottom);
 
-  doc.setTextColor(80, 80, 80);
-  doc.setFontSize(koreanFontSize);
-  doc.text(koreanLines, marginLeft, y);
-  y += koreanLines.length * lineHeight + itemGap;
+  doc.setFontSize(cellFontSize);
+  doc.setTextColor(110, 119, 136);
+  drawCellText(numberLines, numberX, rowTop, numberColumnWidth, rowHeight, "center");
+
+  doc.setTextColor(34, 41, 55);
+  drawCellText(englishLines, englishX, rowTop, englishColumnWidth, rowHeight, "left");
+
+  doc.setTextColor(76, 85, 104);
+  drawCellText(koreanLines, koreanX, rowTop, koreanColumnWidth, rowHeight, "left");
+
+  y += rowHeight;
  }
 
  doc.save(filename);

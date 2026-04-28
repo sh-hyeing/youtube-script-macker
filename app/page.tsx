@@ -247,6 +247,12 @@ const writeCachedStudyResult = (videoUrl: string, originalScript: string, pairs:
  } catch {}
 };
 
+const removeCachedStudyResult = (videoUrl: string) => {
+ try {
+  localStorage.removeItem(getResultCacheKey(videoUrl));
+ } catch {}
+};
+
 const parseJsonResponse = async <T,>(response: Response, fallbackMessage: string): Promise<T> => {
  const rawText = await response.text();
 
@@ -490,6 +496,22 @@ export default function Page() {
   setActiveKeyIndex(nextIndex);
   localStorage.setItem(STORAGE_ACTIVE_KEY, String(nextIndex));
   setStatusText(next.length > 0 ? "API 키 업데이트됨" : "대기 중");
+ };
+
+ const removePair = (index: number) => {
+  setPairs((prev) => {
+   const nextPairs = prev.filter((_, pairIndex) => pairIndex !== index);
+
+   if (lastRunVideoUrl) {
+    if (nextPairs.length > 0 || originalScript.trim()) {
+     writeCachedStudyResult(lastRunVideoUrl, originalScript, nextPairs);
+    } else {
+     removeCachedStudyResult(lastRunVideoUrl);
+    }
+   }
+
+   return nextPairs;
+  });
  };
 
  const extractTranscript = async (signal?: AbortSignal) => {
@@ -1201,21 +1223,57 @@ export default function Page() {
 
          <div className="studio-viewer studio-viewer-soft">
           {pairs.length > 0 ? (
-           <div className="study-script-list">
-            {pairs.map((pair, index) => (
-             <div className="study-script-item" key={`${pair.en}-${index}`}>
-              {viewMode === "bilingual" ? (
-               <>
-                <div className="study-line-en">{pair.en}</div>
-                <div className="study-line-ko">{pair.ko}</div>
-               </>
-              ) : viewMode === "english" ? (
-               <div className="study-line-en">{pair.en}</div>
-              ) : (
-               <div className="study-line-ko">{pair.ko}</div>
-              )}
-             </div>
-            ))}
+            <div className="study-script-list">
+             {pairs.map((pair, index) => (
+              <div className="study-script-item" key={`${pair.en}-${index}`}>
+               {viewMode === "bilingual" ? (
+                <>
+                 <div className="study-script-topline">
+                  <div className="study-line-en">{pair.en}</div>
+                  <button
+                   type="button"
+                   className="studio-icon-btn study-script-remove-btn"
+                   onClick={() => removePair(index)}
+                   disabled={isBusy}
+                   aria-label={`문장 ${index + 1} 삭제`}
+                   title="삭제"
+                  >
+                   x
+                  </button>
+                 </div>
+                 <div className="study-line-ko">{pair.ko}</div>
+                </>
+               ) : viewMode === "english" ? (
+                <div className="study-script-topline">
+                 <div className="study-line-en">{pair.en}</div>
+                 <button
+                  type="button"
+                  className="studio-icon-btn study-script-remove-btn"
+                  onClick={() => removePair(index)}
+                  disabled={isBusy}
+                  aria-label={`문장 ${index + 1} 삭제`}
+                  title="삭제"
+                 >
+                  x
+                 </button>
+                </div>
+               ) : (
+                <div className="study-script-topline">
+                 <div className="study-line-ko study-line-ko-only">{pair.ko}</div>
+                 <button
+                  type="button"
+                  className="studio-icon-btn study-script-remove-btn"
+                  onClick={() => removePair(index)}
+                  disabled={isBusy}
+                  aria-label={`문장 ${index + 1} 삭제`}
+                  title="삭제"
+                 >
+                  x
+                 </button>
+                </div>
+               )}
+              </div>
+             ))}
            </div>
           ) : (
            <div className="studio-empty">
