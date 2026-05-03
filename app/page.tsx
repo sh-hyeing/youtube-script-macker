@@ -428,6 +428,31 @@ const getTranscriptJobStageLabel = (stage?: string) => {
  }
 };
 
+const getFriendlyTranscriptStageLabel = (stage?: string) => {
+ switch (stage) {
+  case "metadata":
+   return "영상 정보를 확인하는 중";
+  case "subtitle":
+   return "자막이 있는지 확인하는 중";
+  case "audio_download":
+   return "음성을 준비하는 중";
+  case "audio_segment":
+   return "긴 음성을 구간별로 나누는 중";
+  case "queued":
+   return "자막 작업을 기다리는 중";
+  default:
+   return "음성 준비를 마무리하는 중";
+ }
+};
+
+const getTranslationStartStatus = (transcriptSource?: string) => {
+ if (transcriptSource === "official_subtitle") {
+  return "공식 자막을 확인했습니다. 학습 스크립트를 정리하는 중";
+ }
+
+ return "학습 스크립트를 정리하는 중";
+};
+
 export default function Page() {
  const [videoUrl, setVideoUrl] = useState("");
  const [apiKeyInput, setApiKeyInput] = useState("");
@@ -625,6 +650,19 @@ const selectedModelsRef = useRef({
   }));
  };
 
+ const openStatusSection = () => {
+  setSidebarSections((prev) => {
+   if (prev.status) {
+    return prev;
+   }
+
+   return {
+    ...prev,
+    status: true,
+   };
+  });
+ };
+
  const getSectionChevron = (isOpen: boolean) => {
   return isOpen ? "▾" : "▸";
  };
@@ -803,7 +841,7 @@ const selectedModelsRef = useRef({
     } as TranscriptResponse;
    }
 
-   setStatusText(jobData.status === "processing" ? getTranscriptJobStageLabel(jobData.stage) : "자막 작업 대기 중");
+   setStatusText(jobData.status === "processing" ? getFriendlyTranscriptStageLabel(jobData.stage) : "자막 작업 대기 중");
    await new Promise((resolve) => setTimeout(resolve, 1500));
   }
  };
@@ -839,6 +877,8 @@ const selectedModelsRef = useRef({
 
  const startFreshRun = async () => {
   const normalizedProcessingUrl = normalizeYouTubeProcessingUrl(videoUrl);
+
+  openStatusSection();
 
   if (!normalizedProcessingUrl) {
    setErrorMessage("유튜브 링크를 입력해 주세요.");
@@ -985,7 +1025,7 @@ const selectedModelsRef = useRef({
    setChunkCount(finalTranscriptChunks.length);
    setSavedTranscriptChunks(finalTranscriptChunks);
    setResumeIndex(0);
-   setStatusText("자막 준비 완료");
+   setStatusText(getTranslationStartStatus(transcriptData.transcriptSource));
    setLoadingTranscript(false);
 
    const selectedModels = getRunModelConfig({
@@ -1060,6 +1100,8 @@ const selectedModelsRef = useRef({
   let resumeChunks = savedTranscriptChunks;
   let nextResumeIndex = resumeIndex;
   let initialPairs = pairs;
+
+  openStatusSection();
 
   if (resumeChunks.length === 0) {
    const cachedResumeState = readCachedResumeState(normalizedProcessingUrl);
@@ -1515,7 +1557,11 @@ const selectedModelsRef = useRef({
            </div>
           ) : (
            <div className="studio-empty">
-            {originalScript ? "정리된 스크립트가 아직 없습니다." : "유튜브 URL과 API 키를 입력한 뒤 스크립트를 생성해 주세요."}
+            {loadingGemini && originalScript
+             ? "첫 문장을 정리하는 중입니다. 완료된 문장부터 바로 표시됩니다."
+             : originalScript
+               ? "정리된 스크립트가 아직 없습니다."
+               : "유튜브 URL과 API 키를 입력한 뒤 스크립트를 생성해 주세요."}
            </div>
           )}
          </div>

@@ -212,7 +212,7 @@ const runWithModelAndKeyFallbackAndRetry = async ({
    const currentKey = apiKeys[currentKeyIndex];
 
    try {
-    onStatusChange?.(modelIndex === 0 && keyLoop === 0 ? "음성 인식 중" : `음성 인식 중 (${currentModel} · 키 ${currentKeyIndex + 1})`);
+    onStatusChange?.(modelIndex === 0 && keyLoop === 0 ? "음성을 글로 옮기는 중" : `음성을 글로 옮기는 중 (${currentModel} · 키 ${currentKeyIndex + 1})`);
 
     const result = await runner({
      model: currentModel,
@@ -236,9 +236,9 @@ const runWithModelAndKeyFallbackAndRetry = async ({
      shortestRetrySeconds = shortestRetrySeconds === null ? retrySeconds : Math.min(shortestRetrySeconds, retrySeconds);
 
      if (message.toLowerCase().includes("service unavailable") || message.includes("(503)")) {
-      onStatusChange?.(`${Math.ceil(retrySeconds)}초 뒤 서버 응답을 다시 시도합니다`);
+      onStatusChange?.(`${Math.ceil(retrySeconds)}초 후 다시 시도합니다`);
      } else {
-      onStatusChange?.(`${Math.ceil(retrySeconds)}초 뒤 다음 키로 재시도`);
+      onStatusChange?.(`${Math.ceil(retrySeconds)}초 후 다른 키로 다시 시도합니다`);
      }
 
      if (keyLoop < apiKeys.length - 1) {
@@ -246,7 +246,7 @@ const runWithModelAndKeyFallbackAndRetry = async ({
      } else if (modelIndex < models.length - 1) {
       onStatusChange?.(`다음 모델로 즉시 전환 중 (${models[modelIndex + 1]})`);
      } else {
-      onStatusChange?.(`${Math.ceil(retrySeconds)}초 대기 후 모든 키 재시도`);
+      onStatusChange?.(`${Math.ceil(retrySeconds)}초 후 다시 시도합니다`);
      }
 
      continue;
@@ -278,7 +278,7 @@ const runWithModelAndKeyFallbackAndRetry = async ({
   }
 
   const retrySeconds = shortestRetrySeconds ?? getBackoffSeconds(elapsed);
-  onStatusChange?.(`${Math.ceil(retrySeconds)}초 뒤 자동 재시도`);
+  onStatusChange?.(`${Math.ceil(retrySeconds)}초 후 자동으로 다시 시도합니다`);
   await sleep((retrySeconds + 1) * 1000);
  }
 };

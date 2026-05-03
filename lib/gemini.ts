@@ -471,7 +471,7 @@ export const callGeminiChunk = async ({
      throw error;
     }
 
-    onStatusChange?.(isStructuredResponseError(error) ? "Response format was unstable, retrying with the next key" : "다음 키로 재시도 중");
+    onStatusChange?.(isStructuredResponseError(error) ? "응답 형식이 불안정하여 다른 키로 다시 시도하는 중" : "다른 키로 다시 시도하는 중");
     if (sleepMs > 0) {
      await sleep(sleepMs);
     }
