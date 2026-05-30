@@ -69,6 +69,20 @@ type DedupePairsOptions = {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const parseGeminiJsonResponse = async (response: Response) => {
+ const rawText = await response.text();
+
+ try {
+  return rawText ? JSON.parse(rawText) : {};
+ } catch {
+  const preview = rawText.replace(/\s+/g, " ").trim().slice(0, 300);
+  const error = new Error(preview ? `Gemini 응답을 JSON으로 읽지 못했습니다. Response preview: ${preview}` : "Gemini 응답을 JSON으로 읽지 못했습니다.") as GeminiError;
+  error.code = "GEMINI_RESPONSE_INVALID";
+  error.status = response.status;
+  throw error;
+ }
+};
+
 const normalizeComparableText = (value: string) => {
  return value
   .normalize("NFKC")
@@ -128,7 +142,7 @@ export const requestGeminiWithKey = async ({ model, prompt, apiKey, signal }: Re
   signal,
  });
 
- const data = await response.json();
+ const data = await parseGeminiJsonResponse(response);
 
  if (!response.ok) {
   const message = data?.error?.message || `Gemini 요청 실패 (${response.status})`;

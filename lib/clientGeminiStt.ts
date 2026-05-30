@@ -21,12 +21,12 @@ type GeminiFileResponse = {
   name?: string;
   uri?: string;
   mimeType?: string;
-  state?: string;
+  state?: string | { name?: string };
  };
  name?: string;
  uri?: string;
  mimeType?: string;
- state?: string;
+ state?: string | { name?: string };
 };
 
 type GeminiGenerateResponse = {
@@ -45,6 +45,8 @@ type GeminiGenerateResponse = {
 const GEMINI_AUDIO_MODELS = ["gemini-2.5-flash-lite", "gemini-2.5-flash"] as const;
 const INLINE_AUDIO_LIMIT = 18 * 1024 * 1024;
 const MAX_AUTO_RETRY_MS = 1000 * 60 * 30;
+const FILE_READY_POLL_INTERVAL_MS = 2000;
+const FILE_READY_MAX_POLLS = 90;
 
 export const transcribeAudioWithGemini = async ({
  audioUrl,
@@ -480,7 +482,7 @@ const uploadFileToGemini = async ({
 };
 
 const waitForFileReady = async ({ name, apiKey, signal }: { name: string; apiKey: string; signal?: AbortSignal }) => {
- for (let i = 0; i < 40; i += 1) {
+ for (let i = 0; i < FILE_READY_MAX_POLLS; i += 1) {
   const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/${name}?key=${encodeURIComponent(apiKey)}`, {
    method: "GET",
    signal,
@@ -494,7 +496,12 @@ const waitForFileReady = async ({ name, apiKey, signal }: { name: string; apiKey
   }
 
   const file = data && typeof data === "object" && data.file ? data.file : data;
-  const state = typeof file?.state === "string" ? file.state : "";
+  const state =
+   typeof file?.state === "string"
+    ? file.state
+    : file?.state && typeof file.state === "object" && typeof file.state.name === "string"
+      ? file.state.name
+      : "";
 
   if (!state || state === "ACTIVE") {
    return;
@@ -504,7 +511,7 @@ const waitForFileReady = async ({ name, apiKey, signal }: { name: string; apiKey
    throw new Error(`Gemini Files 상태가 비정상적입니다: ${state}`);
   }
 
-  await sleep(1500);
+  await sleep(FILE_READY_POLL_INTERVAL_MS);
  }
 
  throw new Error("Gemini Files 준비 시간이 초과되었습니다.");
