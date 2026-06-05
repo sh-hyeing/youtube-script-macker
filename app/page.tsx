@@ -761,24 +761,9 @@ const selectedModelsRef = useRef({
 
  const extractTranscript = async (signal?: AbortSignal) => {
   const normalizedProcessingUrl = normalizeYouTubeProcessingUrl(videoUrl);
-  setStatusText("자막 서버 연결 중");
-
-  const configResponse = await fetch("/api/transcript-server", {
-   method: "GET",
-   cache: "no-store",
-   signal,
-  });
-  const configData = await parseJsonResponse<{ baseUrl?: string; error?: string }>(configResponse, "자막 서버 설정 응답을 읽지 못했습니다.");
-
-  if (!configResponse.ok || !configData.baseUrl) {
-   throw new Error(configData.error || "자막 서버 주소를 가져오지 못했습니다.");
-  }
-
-  const transcriptServerBaseUrl = configData.baseUrl.replace(/\/+$/, "");
-
   setStatusText("자막 작업 준비 중");
 
-  const startResponse = await fetch(`${transcriptServerBaseUrl}/transcript-job/start`, {
+  const startResponse = await fetch("/api/transcript-job/start", {
    method: "POST",
    headers: {
     "Content-Type": "application/json",
@@ -797,7 +782,7 @@ const selectedModelsRef = useRef({
     throw new DOMException("Aborted", "AbortError");
    }
 
-   const jobResponse = await fetch(`${transcriptServerBaseUrl}/transcript-job/${startData.jobId}`, {
+   const jobResponse = await fetch(`/api/transcript-job/${startData.jobId}`, {
     method: "GET",
     cache: "no-store",
     signal,
